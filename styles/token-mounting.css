@@ -1,0 +1,8 @@
+/* Match the core HUD control sizing so the button does not reflow the column. */
+.scorpious187s-token-mounting-control i {
+  line-height: inherit;
+}
+
+.scorpious187s-token-mounting-control.active {
+  color: var(--color-shadow-primary, #ff0000);
+}

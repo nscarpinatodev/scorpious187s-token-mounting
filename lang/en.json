@@ -1,0 +1,25 @@
+{
+  "S187TM.Settings.GrantOwnership": "Grant Mount Ownership on Mounting",
+  "S187TM.Settings.GrantOwnershipHint": "When a rider mounts, give that rider's owners ownership of the mount so they can move it directly, with no GM relay. Foundry resolves token permission through the actor, so this also grants access to the mount's character sheet. Turn off to require a GM to be online and relay movement instead.",
+  "S187TM.Settings.MaxRiders": "Maximum Riders per Mount",
+  "S187TM.Settings.MaxRidersHint": "How many tokens may ride a single mount.",
+  "S187TM.Settings.Debug": "Debug Logging",
+  "S187TM.Settings.DebugHint": "Log mounting and carrying decisions to the console.",
+
+  "S187TM.HUD.Mount": "Mount the targeted token",
+  "S187TM.HUD.Dismount": "Dismount",
+  "S187TM.HUD.TargetFirst": "Target the token you want to ride first, then click Mount.",
+
+  "S187TM.Status.RidingOn": "Riding {name}",
+
+  "S187TM.Error.Missing": "That token no longer exists.",
+  "S187TM.Error.Self": "A token cannot ride itself.",
+  "S187TM.Error.DifferentScene": "Both tokens must be on the same scene.",
+  "S187TM.Error.AlreadyMounted": "That token is already riding something. Dismount first.",
+  "S187TM.Error.Cycle": "That would make two tokens ride each other.",
+  "S187TM.Error.Full": "That mount has no free seats.",
+  "S187TM.Error.NoGM": "A GM must be online to mount or dismount.",
+  "S187TM.Error.NoCarryAction": "Token Mounting: the carry movement action could not be registered, so riders will snap to position instead of travelling with their mount.",
+
+  "S187TM.Movement.Carried": "Carried"
+}
