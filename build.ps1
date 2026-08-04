@@ -77,8 +77,22 @@ foreach ($item in $include) {
   Copy-Item $source -Destination $stage -Recurse -Force
 }
 
-$zipPath = Join-Path $dist "$moduleId-v$version.zip"
+# The archive name is fixed rather than versioned, because the manifest's
+# `download` URL points at a literal `module.zip` under the release tag and
+# Foundry fetches exactly that. A versioned filename was convenient for copying
+# builds to a test server by hand, but it 404s every manifest-URL install.
+# The tag in the URL is what distinguishes one release from the next.
+$zipPath = Join-Path $dist 'module.zip'
 if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+
+# Clear out archives from the old versioned naming. They are stale build output
+# either way, and leaving them beside the real asset invites uploading the wrong
+# file to a release — which fails only for whoever installs it.
+Get-ChildItem $dist -Filter "$moduleId-v*.zip" -File -ErrorAction SilentlyContinue |
+  ForEach-Object {
+    Write-Host "  removing stale archive: $($_.Name)" -ForegroundColor DarkGray
+    Remove-Item $_.FullName -Force
+  }
 
 # Build entries by hand rather than using Compress-Archive.
 #
@@ -112,6 +126,13 @@ $size = [math]::Round((Get-Item $zipPath).Length / 1KB, 1)
 Write-Host ""
 Write-Host "Built $moduleId v$version" -ForegroundColor Green
 Write-Host "  $zipPath ($size KB)"
+Write-Host "  $(Join-Path $dist 'module.json')"
 Write-Host ""
-Write-Host "Copy to the server, then unzip into:" -ForegroundColor Yellow
+Write-Host "Release: attach BOTH files to the v$version tag." -ForegroundColor Yellow
+Write-Host "  gh release create v$version `"$zipPath`" `"$(Join-Path $dist 'module.json')`""
+Write-Host ""
+Write-Host "The manifest URL resolves to the newest release's module.json," -ForegroundColor DarkGray
+Write-Host "which then points back at module.zip under its own tag."
+Write-Host ""
+Write-Host "Local testing: unzip into" -ForegroundColor Yellow
 Write-Host "  <FoundryData>\Data\modules\$moduleId\"

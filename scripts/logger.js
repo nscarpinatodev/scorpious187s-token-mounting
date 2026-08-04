@@ -15,7 +15,14 @@ function debugEnabled() {
 }
 
 export const log = {
-  info: (...a) => (cached ??= libLogger())?.log?.(...a) ?? console.log(`${MODULE_ID} |`, ...a),
+  // Deliberately not `lib?.log?.(...a) ?? console.log(...)`: the lib logger
+  // returns undefined, so `??` would fall through and print every line twice
+  // whenever scorpious187s-lib is actually installed.
+  info: (...a) => {
+    const lib = (cached ??= libLogger());
+    if (lib?.log) lib.log(...a);
+    else console.log(`${MODULE_ID} |`, ...a);
+  },
   warn: (...a) => console.warn(`${MODULE_ID} |`, ...a),
   error: (...a) => console.error(`${MODULE_ID} |`, ...a),
   debug: (...a) => { if (debugEnabled()) console.log(`${MODULE_ID} | [debug]`, ...a); },

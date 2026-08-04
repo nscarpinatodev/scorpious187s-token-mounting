@@ -9,7 +9,14 @@ import { registerCarryAction, carryAction, CARRY_ACTION } from './carry-action.j
 import { registerMovementSync, resnap } from './movement.js';
 import { registerMountSocket, registerCleanup, requestMount, requestDismount } from './mount.js';
 import { registerTokenHUD } from './hud.js';
+import { registerTokenConfig } from './token-config.js';
+import { registerSteering, PILOT_SEAT } from './steering.js';
+import { registerDnd5e, isDnd5e } from './systems/dnd5e.js';
+import { registerMountDetection, looksLikeMount } from './mount-detection.js';
 import { getMount, getRiders, allRiders, isMounted, isMount } from './relations.js';
+import {
+  capacityOf, isMountable, isRideable, acceptsDragMount, grantsOwnership,
+} from './token-options.js';
 import { generateSeats, seatPosition } from './seating.js';
 import { log } from './logger.js';
 
@@ -19,7 +26,13 @@ Hooks.once('init', () => {
   // time a waypoint references it.
   registerCarryAction();
   registerMovementSync();
+  // Before the HUD, so a drag that lands on a mount is handled by the same
+  // validation the button uses rather than racing it.
+  registerSteering();
   registerTokenHUD();
+  registerTokenConfig();
+  // On `init` so it is listening before the first token can be dropped.
+  registerMountDetection();
 
   game.modules.get(MODULE_ID).api = Object.freeze({
     mount: requestMount,
@@ -30,7 +43,11 @@ Hooks.once('init', () => {
     isMounted,
     isMount,
     resnap,
+    pilotSeat: PILOT_SEAT,
     seating: { generateSeats, seatPosition },
+    options: { capacityOf, isMountable, isRideable, acceptsDragMount, grantsOwnership },
+    system: { isDnd5e },
+    detection: { looksLikeMount },
   });
 
   log.info('Initialized');
@@ -39,6 +56,9 @@ Hooks.once('init', () => {
 Hooks.once('ready', () => {
   registerMountSocket();
   registerCleanup();
+  // At `ready` rather than `init`: the gate only matters once someone can
+  // actually mount, and game.system is settled either way.
+  registerDnd5e();
 
   // If our own action failed to register we fall back to `displace`, which
   // still costs nothing but teleports riders instead of carrying them. Say so

@@ -1,8 +1,12 @@
 import {
-  MODULE_ID, FLAG_MOUNT, SOCKET, MSG_MOUNT, MSG_DISMOUNT, SETTING_MAX_RIDERS,
+  MODULE_ID, FLAG_MOUNT, SOCKET, MSG_MOUNT, MSG_DISMOUNT,
 } from './constants.js';
-import { getMount, getRiders, wouldCycle, nextFreeSeat, isMounted } from './relations.js';
-import { grantMountOwnership, revokeMountOwnership } from './ownership.js';
+import { capacityOf, isMountable, isRideable } from './token-options.js';
+import {
+  getMount, getRiders, wouldCycle, nextFreeSeat, isMounted, mountLink,
+} from './relations.js';
+import { grantMountOwnership, revokeMountOwnership, revokeAllGrants } from './ownership.js';
+import { restoreSort } from './layering.js';
 import { resnap } from './movement.js';
 import { log } from './logger.js';
 
@@ -26,6 +30,16 @@ export function registerMountSocket() {
       const rider = scene?.tokens?.get(payload.riderId);
       if (!rider) return;
 
+      // The socket is the one place a client asks us to write on its behalf, so
+      // it is the one place the server's own permission check does not apply —
+      // the write lands under GM credentials no matter who asked for it. Verify
+      // the request the way Foundry would have if the user had made the change
+      // themselves, or any client can mount any token onto any other.
+      if (!mayControl(payload.userId, rider)) {
+        log.warn(`refused ${payload.type}: user "${payload.userId}" does not own "${rider.name}"`);
+        return;
+      }
+
       if (payload.type === MSG_MOUNT) {
         const mount = scene.tokens.get(payload.mountId);
         if (mount) await performMount(rider, mount, payload.userId);
@@ -38,17 +52,23 @@ export function registerMountSocket() {
   });
 }
 
+/**
+ * May this user mount or dismount this token?
+ *
+ * Ownership of the *rider* is the whole test. Owning the mount is deliberately
+ * not required — riding an NPC horse you do not own is the ordinary case, and
+ * granting that ownership is exactly what mounting is for.
+ */
+function mayControl(userId, tokenDoc) {
+  const user = game.users.get(userId);
+  if (!user) return false;
+  if (user.isGM) return true;
+  return tokenDoc.actor?.testUserPermission(user, 'OWNER') ?? false;
+}
+
 export function isPrimaryGM() {
   const gms = game.users.filter(u => u.active && u.isGM).map(u => u.id).sort();
   return gms[0] === game.user.id;
-}
-
-function maxRiders() {
-  try {
-    return Number(game.settings.get(MODULE_ID, SETTING_MAX_RIDERS)) || 8;
-  } catch {
-    return 8;
-  }
 }
 
 /**
@@ -62,8 +82,56 @@ export function validateMount(riderDoc, mountDoc) {
   if (riderDoc.parent?.id !== mountDoc.parent?.id) return 'S187TM.Error.DifferentScene';
   if (isMounted(riderDoc)) return 'S187TM.Error.AlreadyMounted';
   if (wouldCycle(riderDoc, mountDoc)) return 'S187TM.Error.Cycle';
-  if (getRiders(mountDoc).length >= maxRiders()) return 'S187TM.Error.Full';
+  if (!isRideable(riderDoc)) return 'S187TM.Error.CannotRide';
+  if (!isMountable(mountDoc)) return 'S187TM.Error.NotMountable';
+  if (getRiders(mountDoc).length >= capacityOf(mountDoc)) return 'S187TM.Error.Full';
   return null;
+}
+
+/**
+ * Are these two tokens hostile to one another?
+ *
+ * Exposed for gate handlers, which is the common case for wanting one: an
+ * unwilling mount has to be subdued before it can be ridden.
+ */
+export function isHostile(riderDoc, mountDoc) {
+  const levels = CONST.TOKEN_DISPOSITIONS;
+  const rider = riderDoc?.disposition;
+  const mount = mountDoc?.disposition;
+  if (rider === undefined || mount === undefined) return false;
+  return (rider === levels.FRIENDLY && mount === levels.HOSTILE)
+    || (rider === levels.HOSTILE && mount === levels.FRIENDLY);
+}
+
+/**
+ * The asynchronous half of mount validation.
+ *
+ * `validateMount` answers questions that can be settled by inspecting state.
+ * This one exists for the questions that cannot — rolling a check, or asking
+ * someone — which is what subduing a hostile mount requires.
+ *
+ * A handler either denies outright by setting `allowed = false`, or pushes a
+ * promise onto `checks` and resolves it with `false` to deny once it knows.
+ * Pushing rather than returning is what lets the hook stay synchronous while
+ * the work behind it is not.
+ *
+ * Deliberately run on the *requesting* client, not the GM's: the player rolling
+ * to control the animal should be the one who sees the dice. That does mean a
+ * modified client could skip it, which is the usual trade at a table where
+ * everyone can already edit their own sheet.
+ */
+export async function mountAllowed(riderDoc, mountDoc) {
+  const gate = { allowed: true, reason: null, checks: [] };
+
+  Hooks.callAll(`${MODULE_ID}.preMount`, riderDoc, mountDoc, gate);
+  if (!gate.allowed) return gate;
+
+  const results = await Promise.all(gate.checks);
+  if (results.some(result => result === false)) {
+    gate.allowed = false;
+    gate.reason ??= 'S187TM.Error.Refused';
+  }
+  return gate;
 }
 
 /** Player-facing entry point. Runs directly if GM, otherwise asks one. */
@@ -71,6 +139,12 @@ export async function requestMount(riderDoc, mountDoc) {
   const error = validateMount(riderDoc, mountDoc);
   if (error) {
     ui.notifications.warn(game.i18n.localize(error));
+    return false;
+  }
+
+  const gate = await mountAllowed(riderDoc, mountDoc);
+  if (!gate.allowed) {
+    ui.notifications.warn(game.i18n.localize(gate.reason ?? 'S187TM.Error.Refused'));
     return false;
   }
 
@@ -125,7 +199,13 @@ export async function performMount(riderDoc, mountDoc, requestingUserId) {
   }
 
   const seat = nextFreeSeat(mountDoc);
-  await riderDoc.setFlag(MODULE_ID, FLAG_MOUNT, { tokenId: mountDoc.id, seat });
+  // Capture the rider's draw order before anything raises it, so dismounting
+  // can put it back instead of leaving the rider above where it started.
+  await riderDoc.setFlag(MODULE_ID, FLAG_MOUNT, {
+    tokenId: mountDoc.id,
+    seat,
+    sort: riderDoc.sort,
+  });
 
   // Ownership before positioning: the requesting player should already be able
   // to drive the mount by the time their rider visibly lands on it.
@@ -139,28 +219,46 @@ export async function performMount(riderDoc, mountDoc, requestingUserId) {
 /** GM-side. Removes the link and restores ownership. */
 export async function performDismount(riderDoc) {
   const mountDoc = getMount(riderDoc);
+  // Read before unsetting: the prior draw order lives on the flag we are about
+  // to remove.
+  const priorSort = mountLink(riderDoc)?.sort;
 
   // Revoke before clearing the flag: revocation inspects the remaining riders
   // to decide whether anyone still justifies each grant, and this rider must
   // still be visible as the one leaving.
   if (mountDoc) await revokeMountOwnership(mountDoc, riderDoc);
   await riderDoc.unsetFlag(MODULE_ID, FLAG_MOUNT);
+  await restoreSort(riderDoc, priorSort);
 
   log.info(`"${riderDoc.name}" dismounted`);
   Hooks.callAll(`${MODULE_ID}.dismounted`, riderDoc, mountDoc);
 }
 
 /**
- * If a mount is deleted its riders would keep a flag pointing at nothing, and
- * its actor would keep widened ownership. Clean both up.
+ * A deleted token strands state at whichever end of the link it was on, so both
+ * have to be cleaned up.
+ *
+ * Deleting a *mount* leaves its riders holding a flag that points at nothing and
+ * its actor holding ownership widened for riders that are no longer aboard.
+ * Deleting a *rider* leaves a grant on its mount that nobody justifies any more
+ * — silently, since nothing else revokes outside of dismount.
  */
 export function registerCleanup() {
   Hooks.on('deleteToken', async (tokenDoc) => {
     if (!game.user.isGM || !isPrimaryGM()) return;
+
+    // The deleted token was a mount.
     for (const rider of getRiders(tokenDoc)) {
+      const priorSort = mountLink(rider)?.sort;
       await rider.unsetFlag(MODULE_ID, FLAG_MOUNT).catch(() => {});
+      await restoreSort(rider, priorSort).catch(() => {});
     }
-    const { revokeAllGrants } = await import('./ownership.js');
     await revokeAllGrants(tokenDoc).catch(() => {});
+
+    // The deleted token was a rider. It is already out of the scene collection
+    // by the time this hook runs, so revocation sees exactly the riders that
+    // remain and withdraws only what none of them still justifies.
+    const mountDoc = getMount(tokenDoc);
+    if (mountDoc) await revokeMountOwnership(mountDoc, tokenDoc).catch(() => {});
   });
 }

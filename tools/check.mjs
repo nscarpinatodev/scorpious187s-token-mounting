@@ -137,6 +137,14 @@ console.log('\nSeat layout');
   const seats = generateSeats(6).map(s => `${s.dx},${s.dy}`);
   check('6 riders are distinct', new Set(seats).size, 6);
 
+  // Pins the invariant behind seatFor in movement.js: a seat index means
+  // nothing without the count it was generated for, so every rider on a mount
+  // must be positioned from one grid sized from that mount. Sizing per rider
+  // put seat 0 on a 2-seat grid and seat 3 on a 4-seat grid, and they overlapped.
+  const onTwo = JSON.stringify(generateSeats(2)[0]);
+  const onFour = JSON.stringify(generateSeats(4)[0]);
+  check('seat 0 is grid-dependent', onTwo !== onFour, true);
+
   // A same-size rider centred on a same-size mount lands exactly on it.
   const mount = { x: 100, y: 200, width: 1, height: 1, elevation: 0, parent: { grid: { size: 100 } } };
   const rider = { width: 1, height: 1 };
@@ -150,6 +158,49 @@ console.log('\nSeat layout');
   check('small rider centred on 4x4 mount x', smallPos.x, 150);
   check('small rider centred on 4x4 mount y', smallPos.y, 150);
   check('rider inherits mount elevation', smallPos.elevation, 30);
+}
+
+// ── 6. Mount name detection ──────────────────────────────────────────────────
+// Pure string matching, so the false-positive behaviour that would actually
+// annoy a table can be pinned here rather than discovered mid-session.
+console.log('\nMount name detection');
+{
+  const { looksLikeMount, DEFAULT_MOUNT_NAMES } = await import(
+    'file://' + path.join(root, 'scripts/mount-detection.js').replace(/\\/g, '/')
+  );
+
+  const check = (label, actual, expected) => {
+    if (actual === expected) pass(`${label} → ${actual}`);
+    else fail(`${label} → got ${actual}, expected ${expected}`);
+  };
+
+  check('"Riding Horse"', looksLikeMount('Riding Horse'), true);
+  check('"Warhorse"', looksLikeMount('Warhorse'), true);
+  check('"Giant Elk"', looksLikeMount('Giant Elk'), true);
+  check('"pegasus" lowercase', looksLikeMount('pegasus'), true);
+
+  // Word boundaries: the whole reason the match is not a substring test.
+  check('"Horseshoe Crab" is not a mount', looksLikeMount('Horseshoe Crab'), false);
+  check('"Ponytail Fern" is not a mount', looksLikeMount('Ponytail Fern'), false);
+
+  check('"Goblin" is not a mount', looksLikeMount('Goblin'), false);
+  check('empty name', looksLikeMount(''), false);
+  check('null name', looksLikeMount(null), false);
+
+  // Ambiguous creatures are deliberately absent, so a table can add them
+  // without every one in the scene becoming a drop target by default.
+  check('"Wolf" is not a default mount', looksLikeMount('Wolf'), false);
+  check('"Dire Wolf" is', looksLikeMount('Dire Wolf'), true);
+
+  // A custom list replaces the defaults rather than extending them.
+  check('custom list matches', looksLikeMount('Sand Skiff', ['skiff']), true);
+  check('custom list excludes defaults', looksLikeMount('Horse', ['skiff']), false);
+
+  // A regex metacharacter in a user-supplied term must not throw or over-match.
+  check('regex metacharacters are literal', looksLikeMount('a.c', ['a.c']), true);
+  check('metacharacters do not wildcard', looksLikeMount('abc', ['a.c']), false);
+
+  check('defaults are non-empty', DEFAULT_MOUNT_NAMES.length > 0, true);
 }
 
 // ── Summary ──────────────────────────────────────────────────────────────────

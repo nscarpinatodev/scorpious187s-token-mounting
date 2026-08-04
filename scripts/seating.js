@@ -12,9 +12,13 @@
 /**
  * Generate seat offsets for a given number of riders.
  *
- * Riders are laid out in rows along the mount's width, biased toward the back
- * (positive dy) so the first seat reads as the driving position on a token
- * facing "up", which is Foundry's default orientation.
+ * Riders are laid out in rows along the mount's width, the whole block centred
+ * on the mount in both axes.
+ *
+ * Note this is a whole-layout function, not a per-seat one: seat 0 of a 2-seat
+ * layout is not seat 0 of a 4-seat layout. Callers must therefore size the grid
+ * once from the mount's state and use that one grid for every rider on it — see
+ * `seatFor` in movement.js.
  *
  * @param {number} count  Number of seats required.
  * @returns {{dx: number, dy: number}[]}

@@ -1,5 +1,6 @@
-import { MODULE_ID, FLAG_GRANTS, SETTING_GRANT_OWNERSHIP } from './constants.js';
+import { MODULE_ID, FLAG_GRANTS } from './constants.js';
 import { getRiders } from './relations.js';
+import { grantsOwnership } from './token-options.js';
 import { log } from './logger.js';
 
 /**
@@ -26,14 +27,6 @@ import { log } from './logger.js';
  * rather than assuming a default and quietly widening or removing access.
  */
 
-export function ownershipGrantsEnabled() {
-  try {
-    return game.settings.get(MODULE_ID, SETTING_GRANT_OWNERSHIP);
-  } catch {
-    return true;
-  }
-}
-
 /** Users who own the rider and should therefore be able to drive the mount. */
 function ridersOwners(riderDoc) {
   const actor = riderDoc?.actor;
@@ -46,7 +39,9 @@ function ridersOwners(riderDoc) {
  * @returns {Promise<void>}
  */
 export async function grantMountOwnership(mountDoc, riderDoc) {
-  if (!game.user.isGM || !ownershipGrantsEnabled()) return;
+  // Resolved per mount: the world setting is only the fallback when this
+  // particular token has no opinion of its own.
+  if (!game.user.isGM || !grantsOwnership(mountDoc)) return;
 
   const actor = mountDoc?.actor;
   if (!actor) return;
