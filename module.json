@@ -2,10 +2,10 @@
   "id": "scorpious187s-token-mounting",
   "title": "Scorpious187's Token Mounting",
   "description": "Mount tokens onto other tokens. Riders are carried along the mount's actual path without spending their own movement, and the pilot moves the mount directly rather than relaying every step through the GM. Steer from the rider in the first seat, mount by dragging one token onto another, and set capacity and permissions per token. Mounts are recognised by name as they are placed. Built on Foundry v13's token movement system; verified on v14.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "url": "https://github.com/nscarpinatodev/scorpious187s-token-mounting",
   "manifest": "https://github.com/nscarpinatodev/scorpious187s-token-mounting/releases/latest/download/module.json",
-  "download": "https://github.com/nscarpinatodev/scorpious187s-token-mounting/releases/download/v0.3.0/module.zip",
+  "download": "https://github.com/nscarpinatodev/scorpious187s-token-mounting/releases/download/v0.4.0/module.zip",
   "compatibility": {
     "minimum": "13",
     "verified": "14"
