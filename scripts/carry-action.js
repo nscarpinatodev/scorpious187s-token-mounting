@@ -18,8 +18,27 @@ import { log } from './logger.js';
  *   measure: false    a passenger spends none of their own movement
  *   walls: null       the mount already resolved walls; do not re-block
  *   visualize: false  no ruler for someone who is not steering
- *   costMultiplier: 0 riding costs nothing
- *   canSelect: false  not something a user picks from the HUD
+ *   getCostFunction   riding costs nothing
+ *   canSelect         not something a user picks from the HUD
+ *
+ * Registered in the fully-expanded `TokenMovementActionConfig` form, not the
+ * `TokenMovementActionConfigDescriptor` shorthand that v14 core uses for its own
+ * actions. v14 normalises the shorthand in `Game##initializeMovementActions`,
+ * turning `canSelect: false` into a function, `terrainAction` into
+ * `deriveTerrainDifficulty` and `costMultiplier` into `getCostFunction`. v13 has
+ * no such pass and reads these fields as-is.
+ *
+ * That difference is not cosmetic. Core calls `config.canSelect(token)`
+ * unguarded while building the Token HUD's movement palette and the Token Config
+ * identity tab, so a boolean there throws "canSelect is not a function" on v13
+ * and aborts both renders — the symptom being tokens that cannot be right-clicked
+ * and settings that will not open, for every token in the world, mounted or not.
+ * Because the throw happens inside core's context preparation, it lands before
+ * `renderTokenHUD`/`renderTokenConfig` fire, which is why the try/catch guards
+ * around our own injections cannot contain it.
+ *
+ * The expanded form is correct on both: v14's normaliser only fills in fields
+ * that are `undefined`, so supplying every one of them makes it a no-op.
  */
 export const CARRY_ACTION = 's187Carried';
 
@@ -33,14 +52,23 @@ export function registerCarryAction() {
   actions[CARRY_ACTION] = {
     label: 'S187TM.Movement.Carried',
     icon: 'fa-solid fa-hands-holding',
+    // v13 has no default for `img`, and the HUD prefers it over `icon` whenever
+    // it is set, so it has to be an explicit null rather than absent.
+    img: null,
     order: 99,
     teleport: false,
     measure: false,
     walls: null,
     visualize: false,
-    canSelect: false,
-    terrainAction: null,
-    costMultiplier: 0,
+    // A function, not `false`: see the note above. Being carried is a state the
+    // module puts a token into, never one a user chooses from the palette.
+    canSelect: () => false,
+    // The expansion of `terrainAction: null` — carried movement ignores terrain
+    // entirely rather than inheriting another action's difficulty.
+    deriveTerrainDifficulty: () => 1,
+    // The expansion of `costMultiplier: 0`. `measure: false` already zeroes the
+    // cost, but the function must exist: v13 calls it without a fallback.
+    getCostFunction: () => () => 0,
     getAnimationOptions: matchMountPace,
   };
 

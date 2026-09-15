@@ -54,6 +54,21 @@ Write-Host "Running pre-flight checks..." -ForegroundColor Cyan
 & node (Join-Path $root 'tools\check.mjs')
 if ($LASTEXITCODE -ne 0) { throw "Pre-flight checks failed; not building." }
 
+# The module targets two generations that declare movement actions differently,
+# and a mismatch is invisible on whichever one you happen to be testing on. When
+# a v14 install is present, check the registered action against its real
+# normaliser; this skips cleanly on a machine that only has v13.
+Write-Host "Verifying against Foundry v14..." -ForegroundColor Cyan
+& node (Join-Path $root 'tools\verify-v14.mjs')
+if ($LASTEXITCODE -ne 0) { throw "v14 verification failed; not building." }
+
+# The options fieldset is injected into a sheet core owns, and the markup varies
+# by generation. This checks it lands somewhere usable whatever the sheet looks
+# like; needs jsdom (npm install --no-save jsdom) and skips without it.
+Write-Host "Verifying Token Config placement..." -ForegroundColor Cyan
+& node (Join-Path $root 'tools\verify-config-ui.mjs')
+if ($LASTEXITCODE -ne 0) { throw "Token Config placement failed; not building." }
+
 $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
 
 $version = $manifest.version

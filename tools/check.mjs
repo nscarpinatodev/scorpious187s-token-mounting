@@ -203,6 +203,78 @@ console.log('\nMount name detection');
   check('defaults are non-empty', DEFAULT_MOUNT_NAMES.length > 0, true);
 }
 
+// ── 7. Movement action config ────────────────────────────────────────────────
+// v14 normalises a shorthand action descriptor into its full form; v13 does not
+// and reads the fields as written. Core calls `canSelect`, `getCostFunction` and
+// `deriveTerrainDifficulty` without checking their type, so a shorthand value
+// left here throws on v13 — and `canSelect` throws while the Token HUD and Token
+// Config are building their movement palettes, taking right-click and the token
+// settings sheet down with it. Pinned because it is invisible on the v14 box.
+console.log('\nMovement action config');
+{
+  const actions = {};
+  const priorConfig = globalThis.CONFIG;
+  globalThis.CONFIG = { Token: { movement: { actions, defaultSpeed: 6 } } };
+
+  const { registerCarryAction, CARRY_ACTION } = await import(
+    'file://' + path.join(root, 'scripts/carry-action.js').split(path.sep).join('/')
+  );
+
+  const check = (label, actual, expected) => {
+    if (actual === expected) pass(`${label} → ${actual}`);
+    else fail(`${label} → got ${actual}, expected ${expected}`);
+  };
+
+  check('registers', registerCarryAction(), true);
+  const config = actions[CARRY_ACTION];
+
+  // The three fields v13 invokes without a typeof guard.
+  for (const key of ['canSelect', 'getCostFunction', 'deriveTerrainDifficulty', 'getAnimationOptions']) {
+    check(`${key} is a function`, typeof config?.[key], 'function');
+  }
+
+  // The shorthand spellings must be absent, or v13 silently drops the semantics
+  // they were standing in for.
+  for (const key of ['costMultiplier', 'terrainAction', 'speedMultiplier']) {
+    check(`no shorthand "${key}"`, key in (config ?? {}), false);
+  }
+
+  // Values, not just shapes: carried movement is unselectable, free, and flat.
+  // Called through a guard so a regression to the shorthand form is reported as
+  // a failed check rather than crashing this tool with the very TypeError it is
+  // here to catch.
+  const call = (fn, ...args) => (typeof fn === 'function' ? fn(...args) : '<not a function>');
+
+  check('canSelect() is false', call(config?.canSelect, {}), false);
+  check('cost is zero', call(call(config?.getCostFunction, {}, {}), 1, {}), 0);
+  check('terrain difficulty is 1', call(config?.deriveTerrainDifficulty, {}), 1);
+
+  // v14 side of the contract: normalisation must be a provable no-op.
+  // `Game##initializeMovementActions` only fills fields that are `undefined`
+  // and only consumes the shorthand spellings, so a config with every field
+  // explicitly present passes through it untouched. Asserting that here is what
+  // makes one config correct on both generations rather than a v13-only fix.
+  const v14Defaults = [
+    'img', 'order', 'teleport', 'measure', 'walls', 'visualize',
+    'getAnimationOptions', 'canSelect', 'deriveTerrainDifficulty', 'getCostFunction',
+  ];
+  const unset = v14Defaults.filter(k => config?.[k] === undefined);
+  check('v14 would default nothing', unset.join(',') || 'none', 'none');
+
+  // label and icon are the two v14 throws outright on.
+  check('label is present', typeof config?.label, 'string');
+  check('icon is present', typeof config?.icon, 'string');
+
+  // v13 has no default for these; the HUD and ruler read them directly.
+  check('img is explicit', config?.img, null);
+  check('does not teleport', config?.teleport, false);
+  check('is not measured', config?.measure, false);
+  check('is not wall-blocked', config?.walls, null);
+  check('is not visualized', config?.visualize, false);
+
+  globalThis.CONFIG = priorConfig;
+}
+
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log('');
 if (failures) {

@@ -153,7 +153,7 @@ function frameAt(mountDoc, point) {
  * @param {boolean} autoRotate      Whether the mount's movement turned it to
  *                                  face its direction of travel.
  */
-async function carryRiders(mountDoc, mountPath = null, autoRotate = false) {
+async function carryRiders(mountDoc, mountPath = null, autoRotate = false, { force = false } = {}) {
   // Resolve the whole chain from this mount down, so a passenger on a rider
   // moves too. allRiders is cycle-guarded, and returns nearest-first — which
   // matters below, because each rider's path is derived from its parent's.
@@ -185,7 +185,13 @@ async function carryRiders(mountDoc, mountPath = null, autoRotate = false) {
     // Recorded even when this client is not the one moving the rider, so the
     // chain below it still resolves against the right route.
     paths.set(rider.id, path);
-    if (!shouldIMove(rider)) continue;
+    // The arbitration below exists because `moveToken` fires on every client,
+    // so exactly one has to be elected to issue the update. A caller that is
+    // already running on a single client — seating riders straight after a
+    // mount, which only ever happens GM-side — must skip it, or the elected
+    // client (the rider's owner) never hears about the move and the rider sits
+    // unmoved until the mount's next step.
+    if (!force && !shouldIMove(rider)) continue;
 
     inFlight.add(rider.id);
     try {
@@ -266,7 +272,14 @@ async function moveRider(riderDoc, path, autoRotate = false) {
   return riderDoc.update(path[path.length - 1], { ...options, animate: false });
 }
 
-/** Snap every rider to its seat immediately, without waiting for a move. */
+/**
+ * Snap every rider to its seat immediately, without waiting for a move.
+ *
+ * Forced: this is called from a single client that has already decided to act
+ * (the GM, right after a mount is established), rather than from a hook that
+ * fires everywhere. Leaving it to the usual election would hand the job to the
+ * rider's owner, who is not running this code.
+ */
 export async function resnap(mountDoc) {
-  await carryRiders(mountDoc);
+  await carryRiders(mountDoc, null, false, { force: true });
 }
