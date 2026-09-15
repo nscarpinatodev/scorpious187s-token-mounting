@@ -1,5 +1,5 @@
 import { MODULE_ID } from './constants.js';
-import { carryAction } from './carry-action.js';
+import { carryAction, movementDuration } from './carry-action.js';
 import { allRiders, getRiders, mountLink, isMount } from './relations.js';
 import { seatPosition, generateSeats } from './seating.js';
 import { ensureLayering } from './layering.js';
@@ -85,7 +85,19 @@ export function registerMovementSync() {
     // Riders inherit the mount's rotation decision rather than making their
     // own. They travel the same vector, so turning when it turns keeps them
     // facing the same way without having to copy its angle.
-    carryRiders(tokenDoc, path.length ? path : null, movement?.autoRotate === true)
+    // How long the mount's own animation takes. Handed to each rider's move so
+    // core derives one speed that lands the rider when the mount lands, however
+    // the route mixed actions or terrain. Measured once here, on the path the
+    // mount actually travelled, and shared by every level of the chain: a
+    // passenger on a knight on a dragon arrives when the dragon does.
+    let duration;
+    try {
+      duration = movementDuration(tokenDoc, movement);
+    } catch (err) {
+      log.error('failed to measure mount animation; riders use their default pace', err);
+    }
+
+    carryRiders(tokenDoc, path.length ? path : null, movement?.autoRotate === true, { duration })
       .catch(err => log.error('failed to carry riders', err));
   });
 
@@ -153,7 +165,7 @@ function frameAt(mountDoc, point) {
  * @param {boolean} autoRotate      Whether the mount's movement turned it to
  *                                  face its direction of travel.
  */
-async function carryRiders(mountDoc, mountPath = null, autoRotate = false, { force = false } = {}) {
+async function carryRiders(mountDoc, mountPath = null, autoRotate = false, { force = false, duration } = {}) {
   // Resolve the whole chain from this mount down, so a passenger on a rider
   // moves too. allRiders is cycle-guarded, and returns nearest-first — which
   // matters below, because each rider's path is derived from its parent's.
@@ -202,7 +214,7 @@ async function carryRiders(mountDoc, mountPath = null, autoRotate = false, { for
       // A multi-point path is always worth issuing: the rider has ground to
       // cover even when it happens to end where it started, as on a loop.
       if (path.length > 1 || !samePosition(rider, destination)) {
-        await moveRider(rider, path, autoRotate);
+        await moveRider(rider, path, autoRotate, duration);
       }
     } catch (err) {
       log.error(`failed to carry rider "${rider.name}"`, err);
@@ -237,7 +249,7 @@ function seatFor(mountDoc, seatIndex) {
   return seats[seatIndex] ?? { dx: 0, dy: 0 };
 }
 
-async function moveRider(riderDoc, path, autoRotate = false) {
+async function moveRider(riderDoc, path, autoRotate = false, duration) {
   const options = {
     [MODULE_ID]: { carried: true },
     // The mount has already paid for this movement and already resolved walls;
@@ -249,6 +261,17 @@ async function moveRider(riderDoc, path, autoRotate = false) {
     // sideways down the road while the mount turns to face along it.
     autoRotate,
   };
+
+  // Present only when the mount's route was measured, so a snap to a seat never
+  // carries one. Not gated on the rider's point count: a plain drag from A to B
+  // is a single waypoint, and it is the move that most needs matching. Core's
+  // `_configureAnimationMovementSpeed` spreads the duration across the rider's
+  // waypoints as one movement speed, stored on the operation so every client
+  // animates the rider identically. Zero means the mount arrived instantly, and
+  // core makes the rider do the same.
+  if (Number.isFinite(duration) && duration >= 0) {
+    options.animation = { duration };
+  }
 
   // The waypoint API carries the action per movement rather than requiring the
   // token's persistent movementAction to be mutated and restored.

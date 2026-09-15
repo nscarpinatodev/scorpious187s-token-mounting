@@ -77,32 +77,141 @@ export function registerCarryAction() {
 }
 
 /**
- * Animate the rider at whatever pace its mount is travelling.
+ * The base animation speed of a token, in grid spaces per second, before its
+ * action or terrain modify it. Asked of the placeable because a system can
+ * override `Token#_getAnimationMovementSpeed`; a token not on the viewed canvas
+ * has no placeable, so the world default stands in.
+ */
+function baseSpeed(tokenDoc) {
+  try {
+    const own = tokenDoc?.object?._getAnimationMovementSpeed?.({});
+    if (Number.isFinite(own) && own > 0) return own;
+  } catch { /* fall through to the default */ }
+  return CONFIG.Token?.movement?.defaultSpeed ?? 6;
+}
+
+/**
+ * How fast a token animates one segment travelled with `action`, in grid spaces
+ * per second. `Infinity` means the segment is instant.
  *
- * Rider and mount cover the same vector at the same moment, so matching speed
- * is what keeps them visually locked together. A fixed speed would drift apart
- * the moment the mount does anything other than walk or fly — swim, crawl and
- * climb all run at half pace.
+ * This mirrors core's own resolution in `Token##animate` and
+ * `Token#_getAnimationDuration` rather than reading any one property of the
+ * action config: the action's `getAnimationOptions` supplies `duration`,
+ * `movementSpeed` or `speedMultiplier` — whichever it declares — and terrain
+ * difficulty divides the result, capped at 10.
  *
- * Note this overrides `speedMultiplier` entirely: Foundry ignores that property
- * whenever `getAnimationOptions` is defined.
+ * Reading `config.speedMultiplier` directly, as this used to, silently did
+ * nothing on v14: the normaliser folds that property into
+ * `getAnimationOptions` and then deletes it, so every mount looked like it was
+ * walking and riders on a swimming or teleporting mount drifted away from it.
+ */
+export function segmentSpeed(tokenDoc, action, terrain = null) {
+  const config = CONFIG.Token?.movement?.actions?.[action];
+  const defaults = typeof config?.getAnimationOptions === 'function'
+    ? (config.getAnimationOptions(tokenDoc) ?? {})
+    : {};
+
+  if (defaults.duration === 0) return Infinity;
+
+  let speed = Number.isFinite(defaults.movementSpeed) ? defaults.movementSpeed : baseSpeed(tokenDoc);
+  speed *= defaults.speedMultiplier ?? 1;
+
+  const difficulty = terrain?.difficulty;
+  if (Number.isFinite(difficulty) && difficulty > 0) speed /= Math.min(difficulty, 10);
+
+  return speed > 0 ? speed : Infinity;
+}
+
+/**
+ * How long a token's movement animation takes, in milliseconds, summed segment
+ * by segment exactly as core animates it: from `movement.origin` through every
+ * passed waypoint, intermediates included, each at its own action's pace and
+ * over its own terrain.
+ *
+ * Measured against the token's own scene rather than `canvas.dimensions`, since
+ * the client doing the work may be looking at a different scene entirely.
+ *
+ * Rotation is deliberately left out. Riders are carried with the mount's
+ * auto-rotate decision, so they turn through the same angles at core's fixed
+ * rotation speed and spend that time themselves.
+ *
+ * @returns {number|undefined} Undefined when the movement cannot be measured.
+ */
+export function movementDuration(tokenDoc, movement) {
+  const origin = movement?.origin;
+  const waypoints = movement?.passed?.waypoints;
+  if (!origin || !Array.isArray(waypoints) || !waypoints.length) return undefined;
+
+  const scene = tokenDoc?.parent;
+  const size = scene?.dimensions?.size ?? scene?.grid?.size;
+  const distancePixels = scene?.dimensions?.distancePixels
+    ?? (size && scene?.grid?.distance ? size / scene.grid.distance : undefined);
+  if (!size || !distancePixels) return undefined;
+
+  let total = 0;
+  let from = origin;
+  for (const to of waypoints) {
+    const speed = segmentSpeed(tokenDoc, to.action ?? tokenDoc.movementAction, to.terrain);
+    if (Number.isFinite(speed)) total += segmentLength(from, to, size, distancePixels) / speed * 1000;
+    from = to;
+  }
+  return total;
+}
+
+/** Core's movement animation distance: travel in grid spaces, or half the resize, whichever is larger. */
+function segmentLength(from, to, size, distancePixels) {
+  const d = (key) => (from[key] ?? 0) - (to[key] ?? from[key] ?? 0);
+  const travel = Math.hypot(d('x'), d('y'), d('elevation') * distancePixels) / size;
+  const resize = Math.hypot(d('width'), d('height'), d('depth')) * 0.5;
+  return Math.max(travel, resize);
+}
+
+/** Riders whose pace is being resolved, so a corrupted mount cycle cannot recurse forever. */
+const resolving = new Set();
+
+/**
+ * Default animation pace for a carried rider: whatever its mount is travelling at.
+ *
+ * This is the fallback. A rider carried along a mount's route is also given the
+ * mount's total animation duration (see movement.js), and core converts that
+ * into one speed for the whole route, which wins over anything returned here.
+ * That is what keeps them together on a route that mixes actions or crosses
+ * difficult terrain — a single default pace cannot, because core asks for it
+ * with only the rider, never the segment.
+ *
+ * Only absolute values are returned. A `speedMultiplier` here would be applied
+ * on top of that duration-derived speed and throw the two back out of step.
+ *
+ * The mount's pace comes from the actions it actually travelled with in its
+ * latest movement, not its stored default action, which a ruler drag can
+ * override. A mount that is itself being carried resolves through its own
+ * `s187Carried` action to the token beneath it, so a passenger on a knight on
+ * a dragon moves at dragon pace.
  */
 function matchMountPace(token) {
-  const base = CONFIG.Token?.movement?.defaultSpeed ?? 1;
+  if (!token?.id || resolving.has(token.id)) return {};
+  resolving.add(token.id);
 
   try {
     const mount = getMount(token);
-    const config = CONFIG.Token?.movement?.actions?.[mount?.movementAction];
-    const multiplier = config?.speedMultiplier;
+    if (!mount) return {};
 
-    // A teleporting mount (blink/displace) reports Infinity. Matching it means
-    // arriving instantly rather than trailing behind at walking pace.
-    if (multiplier !== undefined && !Number.isFinite(multiplier)) return { duration: 0 };
+    const travelled = mount.movement?.passed?.waypoints;
+    const actions = Array.isArray(travelled) && travelled.length
+      ? travelled.map(waypoint => waypoint.action ?? mount.movementAction)
+      : [mount.movementAction];
 
-    return { movementSpeed: base * (multiplier ?? 1) };
+    // Instant only if every segment was; otherwise the pace of the last segment
+    // that actually animated, so a blink partway along does not freeze a walk.
+    const speeds = actions.map(action => segmentSpeed(mount, action));
+    const moving = speeds.filter(Number.isFinite);
+    if (!moving.length) return { duration: 0 };
+    return { movementSpeed: moving[moving.length - 1] };
   } catch (err) {
     log.error('failed to match mount pace; using default', err);
-    return { movementSpeed: base };
+    return {};
+  } finally {
+    resolving.delete(token.id);
   }
 }
 

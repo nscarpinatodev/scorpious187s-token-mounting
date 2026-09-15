@@ -127,7 +127,7 @@ async function verify(appRoot) {
   const before = Object.keys(actions).length;
   globalThis.CONFIG = { Token: { movement: { actions, defaultAction: 'walk', defaultSpeed: 6 } } };
 
-  const { registerCarryAction, CARRY_ACTION } = await import(
+  const { registerCarryAction, CARRY_ACTION, segmentSpeed } = await import(
     `${pathToFileURL(path.join(root, 'scripts/carry-action.js')).href}?v14=${release.build}`
   );
   registerCarryAction();
@@ -172,6 +172,20 @@ async function verify(appRoot) {
   check('carried is unselectable', !config.canSelect(token), true);
   check('carried costs nothing', config.getCostFunction(token, {})(5, {}), 0);
   check('carried ignores terrain', config.deriveTerrainDifficulty({ walk: 3, fly: 2 }), 1);
+
+  // Mount pace against core's own actions after normalisation. v14 deletes the
+  // `speedMultiplier` property these used to be read from, so this is the check
+  // that riders on a swimming, climbing or teleporting mount keep up with it.
+  const base = globalThis.CONFIG.Token.movement.defaultSpeed;
+  const expected = {
+    walk: base, fly: base, burrow: base, jump: base,
+    swim: base / 2, crawl: base / 2, climb: base / 2,
+    blink: Infinity, displace: Infinity,
+  };
+  for (const [action, speed] of Object.entries(expected)) {
+    if (!(action in globalThis.CONFIG.Token.movement.actions)) continue;
+    check(`mount pace: ${action}`, segmentSpeed({}, action), speed);
+  }
 
   return true;
 }

@@ -275,6 +275,116 @@ console.log('\nMovement action config');
   globalThis.CONFIG = priorConfig;
 }
 
+// ── 8. Mount pace ────────────────────────────────────────────────────────────
+// Riders have to animate at their mount's pace or they visibly drift off it.
+// The action configs here are in the shape v14's normaliser leaves them — pace
+// only reachable through `getAnimationOptions` — plus a v13-style absolute
+// `movementSpeed`, because reading a raw `speedMultiplier` is exactly what used
+// to make every mount look like it was walking.
+console.log('\nMount pace');
+{
+  const actions = {
+    walk: { getAnimationOptions: () => ({ speedMultiplier: 1 }) },
+    swim: { getAnimationOptions: () => ({ speedMultiplier: 0.5 }) },
+    blink: { getAnimationOptions: () => ({ speedMultiplier: Infinity }) },
+    displace: { getAnimationOptions: () => ({ duration: 0 }) },
+    sprint: { getAnimationOptions: () => ({ movementSpeed: 12 }) },
+  };
+  const priorConfig = globalThis.CONFIG;
+  globalThis.CONFIG = { Token: { movement: { actions, defaultSpeed: 6 } } };
+
+  const { registerCarryAction, CARRY_ACTION, segmentSpeed, movementDuration } = await import(
+    'file://' + path.join(root, 'scripts/carry-action.js').split(path.sep).join('/')
+  );
+  registerCarryAction();
+  const pace = (token) => actions[CARRY_ACTION].getAnimationOptions(token);
+
+  const check = (label, actual, expected) => {
+    if (actual === expected) pass(`${label} → ${actual}`);
+    else fail(`${label} → got ${actual}, expected ${expected}`);
+  };
+  const json = (value) => JSON.stringify(value);
+
+  const scene = { dimensions: { size: 100, distancePixels: 20 }, tokens: new Map() };
+  const token = (id, { mount, action = 'walk', passed = [] } = {}) => {
+    const doc = {
+      id, parent: scene, movementAction: action,
+      movement: { passed: { waypoints: passed.map(a => ({ action: a })) } },
+      getFlag: (scope, key) => (key === 'mount' && mount ? { tokenId: mount, seat: 0 } : undefined),
+    };
+    scene.tokens.set(id, doc);
+    return doc;
+  };
+
+  // Per-segment speed, resolved the way core resolves it.
+  check('walk', segmentSpeed({}, 'walk'), 6);
+  check('swim is half pace', segmentSpeed({}, 'swim'), 3);
+  check('absolute movementSpeed wins over base', segmentSpeed({}, 'sprint'), 12);
+  check('blink (Infinity multiplier) is instant', segmentSpeed({}, 'blink'), Infinity);
+  check('displace (duration 0) is instant', segmentSpeed({}, 'displace'), Infinity);
+  check('unknown action falls back to base', segmentSpeed({}, 'nonexistent'), 6);
+  check('difficult terrain divides speed', segmentSpeed({}, 'walk', { difficulty: 2 }), 3);
+  check('terrain difficulty is capped at 10', segmentSpeed({}, 'walk', { difficulty: 50 }), 0.6);
+
+  // The rider's default pace.
+  token('horse');
+  check('rider on a walking horse', json(pace(token('r1', { mount: 'horse' }))), '{"movementSpeed":6}');
+  token('seal', { action: 'swim' });
+  check('rider on a swimming mount', json(pace(token('r2', { mount: 'seal' }))), '{"movementSpeed":3}');
+  token('imp', { action: 'blink' });
+  check('rider on a blinking mount is instant', json(pace(token('r3', { mount: 'imp' }))), '{"duration":0}');
+
+  // What was actually travelled beats the stored default, which a ruler overrides.
+  token('dragged', { action: 'walk', passed: ['swim', 'swim'] });
+  check('ruler-selected action beats default', json(pace(token('r4', { mount: 'dragged' }))), '{"movementSpeed":3}');
+  token('mixed', { passed: ['walk', 'blink'] });
+  check('a blink partway does not freeze a walk', json(pace(token('r5', { mount: 'mixed' }))), '{"movementSpeed":6}');
+  token('allInstant', { passed: ['blink', 'displace'] });
+  check('all-instant route is instant', json(pace(token('r6', { mount: 'allInstant' }))), '{"duration":0}');
+
+  // A passenger on a carried knight moves at the dragon's pace.
+  token('dragon', { action: 'swim' });
+  token('knight', { mount: 'dragon', passed: [CARRY_ACTION] });
+  check('chain resolves to the root mount', json(pace(token('page', { mount: 'knight' }))), '{"movementSpeed":3}');
+
+  // Corrupted flags that make two tokens carry each other must not hang or throw.
+  token('a', { mount: 'b', passed: [CARRY_ACTION] });
+  token('b', { mount: 'a', passed: [CARRY_ACTION] });
+  let cycle;
+  try { cycle = json(pace(scene.tokens.get('a'))); } catch (err) { cycle = `threw: ${err.message}`; }
+  check('mount cycle terminates', typeof cycle === 'string' && !cycle.startsWith('threw'), true);
+
+  check('no mount → core default', json(pace(token('alone'))), '{}');
+
+  // Only absolute values: a multiplier would be applied on top of the speed core
+  // derives from the duration and put rider and mount back out of step.
+  const returned = ['horse', 'seal', 'imp', 'dragged'].map((m, i) => pace(token(`k${i}`, { mount: m })));
+  check('never returns speedMultiplier', returned.some(r => 'speedMultiplier' in r), false);
+
+  // Whole-route duration, mirroring Token##getMovementAnimationDuration.
+  const mover = { parent: scene, movementAction: 'walk' };
+  const origin = { x: 0, y: 0, elevation: 0, width: 1, height: 1 };
+  const ms = (movement) => {
+    const value = movementDuration(mover, movement);
+    return value === undefined ? undefined : Math.round(value);
+  };
+  check('6 squares walking at 6/s', ms({ origin, passed: { waypoints: [{ x: 600, y: 0, action: 'walk' }] } }), 1000);
+  check('route mixing walk, swim, blink and terrain', ms({ origin, passed: { waypoints: [
+    { x: 600, y: 0, action: 'walk' },
+    { x: 900, y: 0, action: 'swim' },
+    { x: 1900, y: 0, action: 'blink' },
+    { x: 2500, y: 0, action: 'walk', terrain: { difficulty: 2 } },
+  ] } }), 4000);
+  check('elevation counts in grid distance', ms({ origin, passed: { waypoints: [{ x: 0, y: 0, elevation: 5, action: 'walk' }] } }), 167);
+  check('resize uses half the size change', ms({ origin, passed: { waypoints: [{ x: 0, y: 0, width: 3, height: 1, action: 'walk' }] } }), 167);
+  check('omitted action uses the default', ms({ origin, passed: { waypoints: [{ x: 300, y: 0 }] } }), 500);
+  check('nothing travelled → unmeasured', ms({ origin, passed: { waypoints: [] } }), undefined);
+  check('scene without grid → unmeasured',
+    movementDuration({ parent: {} }, { origin, passed: { waypoints: [{ x: 600, y: 0 }] } }), undefined);
+
+  globalThis.CONFIG = priorConfig;
+}
+
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log('');
 if (failures) {
