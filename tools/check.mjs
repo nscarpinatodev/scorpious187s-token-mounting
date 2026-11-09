@@ -385,6 +385,106 @@ console.log('\nMount pace');
   globalThis.CONFIG = priorConfig;
 }
 
+// ── 9. Carrying across consecutive moves ─────────────────────────────────────
+// On v14 riders followed their mount only every second move. `TokenDocument#move`
+// resolves once a movement is *complete*, and a rider whose previous carried
+// movement is still open has its next one refused — so each carry that worked
+// left the rider in a state where the next carry would not. This drives the
+// real moveToken handler against a token that behaves that way and requires the
+// rider to follow every single move, not just most of them.
+console.log('\nCarrying across consecutive moves');
+{
+  const priorGlobals = { CONFIG: globalThis.CONFIG, game: globalThis.game, Hooks: globalThis.Hooks };
+  const handlers = {};
+  globalThis.Hooks = { on: (name, fn) => { handlers[name] = fn; } };
+  globalThis.CONFIG = { Token: { movement: { actions: {}, defaultSpeed: 6 } } };
+  globalThis.game = {
+    user: { id: 'gm', isGM: true },
+    users: [{ id: 'gm', isGM: true, active: true }],
+    settings: { get: () => { throw new Error('unregistered'); } },
+    modules: new Map(),
+  };
+
+  const url = (file) => 'file://' + path.join(root, file).split(path.sep).join('/');
+  const { registerCarryAction } = await import(url('scripts/carry-action.js'));
+  const { registerMovementSync } = await import(url('scripts/movement.js'));
+  registerCarryAction();
+  registerMovementSync();
+
+  const check = (label, actual, expected) => {
+    if (actual === expected) pass(`${label} → ${actual}`);
+    else fail(`${label} → got ${actual}, expected ${expected}`);
+  };
+  const settle = () => new Promise(resolve => setTimeout(resolve, 25));
+
+  class Tokens extends Map {
+    filter(fn) { return [...this.values()].filter(fn); }
+  }
+
+  /**
+   * A scene with one mount and one rider. `animating` decides whether the
+   * rider's open movement looks like an animation still finishing (refused,
+   * then retried) or one nothing is driving (cleared up front).
+   */
+  function scenario({ animating }) {
+    const scene = { grid: { size: 100 }, dimensions: { size: 100, distancePixels: 20 }, tokens: new Tokens() };
+    const token = (id, fields) => {
+      const doc = {
+        id, name: id, parent: scene, x: 0, y: 0, elevation: 0, width: 1, height: 1, sort: 0,
+        movementAction: 'walk', movement: { state: 'completed' }, flags: {}, actor: null,
+        rendered: animating, object: animating ? { movementAnimationPromise: new Promise(() => {}) } : null,
+        getFlag(scope, key) { return this.flags[key]; },
+        async update(changes) { Object.assign(this, changes); return this; },
+        ...fields,
+      };
+      scene.tokens.set(id, doc);
+      return doc;
+    };
+
+    const mount = token('horse');
+    const rider = token('knight', { flags: { mount: { tokenId: 'horse', seat: 0 } } });
+    rider.refused = 0;
+    rider.move = async function (waypoints) {
+      // The v14 behaviour: a move issued while the last one is still open is
+      // spent closing it, and goes nowhere. Hence every *second* move.
+      if (this.movement.state === 'pending') {
+        this.refused++;
+        this.movement = { state: 'stopped' };
+        return false;
+      }
+      const last = waypoints[waypoints.length - 1];
+      Object.assign(this, { x: last.x, y: last.y, elevation: last.elevation ?? this.elevation });
+      this.movement = { state: 'pending' };
+      return true;
+    };
+    rider.stopMovement = function () {
+      if (this.movement.state !== 'pending') return false;
+      this.movement = { state: 'stopped' };
+      return true;
+    };
+    return { mount, rider };
+  }
+
+  for (const animating of [false, true]) {
+    const label = animating ? 'open movement still animating' : 'open movement left stale';
+    const { mount, rider } = scenario({ animating });
+    let followed = 0;
+    const moves = 4;
+    for (let i = 1; i <= moves; i++) {
+      const to = { x: i * 100, y: 0, elevation: 0 };
+      mount.x = to.x;
+      handlers.moveToken(mount, { passed: { waypoints: [to] }, autoRotate: false }, {});
+      await settle();
+      if (rider.x === mount.x && rider.y === mount.y) followed++;
+    }
+    check(`${label}: rider follows ${moves} consecutive moves`, followed, moves);
+    if (!animating) check(`${label}: cleared before moving, nothing refused`, rider.refused, 0);
+    else check(`${label}: each refusal recovered by one retry`, rider.refused, moves - 1);
+  }
+
+  Object.assign(globalThis, priorGlobals);
+}
+
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log('');
 if (failures) {

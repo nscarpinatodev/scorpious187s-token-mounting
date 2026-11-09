@@ -90,6 +90,17 @@ approximated the real path well enough to look right, and on v14 the whole route
 collapses into one update, taking the approximation with it. Following the path
 is the correct behaviour on both rather than a workaround for either.
 
+**Every move is carried, not every other one.** On v14 `TokenDocument#move`
+resolves only once a movement is complete, and a rider whose previous carried
+movement is still open — because it starts a beat after its mount and lands a
+beat after it, or because nothing is left driving it — can have its next movement
+refused. Carrying each move left the rider set up to drop the next, so riders
+followed on alternate moves. Riders are now moved from outside the mount's update
+workflow, an open movement with nothing animating it is closed before the rider
+is moved, a refused carry closes whatever is still open and retries, and a carry
+refused twice places the rider on its seat directly. All riders on a mount move
+together rather than each waiting for the one before to finish its journey.
+
 **Mount speed governs the turn for free.** Because the pilot moves the *mount*
 token, Foundry and dnd5e measure that movement against the mount's own speed.
 Riding a dragon uses the dragon's speed with no special handling.

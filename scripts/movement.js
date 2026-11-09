@@ -43,8 +43,46 @@ import { log } from './logger.js';
  * Tokens this client is currently carrying. Moving a rider fires movement hooks
  * for that rider, and a rider can itself be a mount — without this guard the
  * chain would re-enter and each token would be moved once per level of depth.
+ *
+ * Counted rather than a plain set: on v14 `TokenDocument#move` resolves only
+ * once the whole movement has finished, so a mount's next segment can start
+ * carrying a rider while the previous carry is still waiting. With a set, the
+ * first carry to finish would clear the token while the second was mid-flight.
  */
-const inFlight = new Set();
+const inFlight = new Map();
+
+function enterFlight(id) {
+  inFlight.set(id, (inFlight.get(id) ?? 0) + 1);
+}
+
+function leaveFlight(id) {
+  const remaining = (inFlight.get(id) ?? 1) - 1;
+  if (remaining > 0) inFlight.set(id, remaining);
+  else inFlight.delete(id);
+}
+
+/**
+ * The latest carry issued for each rider, by token id. A carry that finds it
+ * has been superseded stops: it must not re-check, retry or "correct" a rider
+ * that a newer carry has already sent somewhere else.
+ */
+const carryGeneration = new Map();
+
+/** Movement states that still hold a token's movement open. */
+const UNFINISHED = new Set(['pending', 'paused']);
+
+/**
+ * Yield to a fresh task.
+ *
+ * `moveToken` is dispatched from inside the mount's update workflow, and core
+ * holds back movement continuation until that workflow has ended. Starting a
+ * rider's movement from inside it threads the rider's movement through the
+ * mount's bookkeeping; starting from a fresh task keeps the two movements
+ * independent, for the cost of one tick.
+ */
+function nextTask() {
+  return new Promise(resolve => setTimeout(resolve, 0));
+}
 
 /**
  * The waypoints someone actually placed, with Foundry's generated in-between
@@ -177,6 +215,8 @@ async function carryRiders(mountDoc, mountPath = null, autoRotate = false, { for
   // rider's resulting route then seeds the level below, so a passenger on a
   // knight on a dragon follows the knight, which follows the dragon.
   const paths = new Map([[mountDoc.id, mountPath]]);
+  // The riders this client is elected to move, with their resolved routes.
+  const carries = [];
 
   for (const rider of riders) {
     // The seat is relative to whatever this rider is directly riding, which is
@@ -205,22 +245,62 @@ async function carryRiders(mountDoc, mountPath = null, autoRotate = false, { for
     // unmoved until the mount's next step.
     if (!force && !shouldIMove(rider)) continue;
 
-    inFlight.add(rider.id);
-    try {
-      // Draw order first, so the rider is already above its mount by the time
-      // it visibly arrives rather than surfacing a frame later.
-      await ensureLayering(rider, parent, seatIndex, { [MODULE_ID]: { carried: true } });
-      const destination = path[path.length - 1];
-      // A multi-point path is always worth issuing: the rider has ground to
-      // cover even when it happens to end where it started, as on a loop.
-      if (path.length > 1 || !samePosition(rider, destination)) {
-        await moveRider(rider, path, autoRotate, duration);
-      }
-    } catch (err) {
-      log.error(`failed to carry rider "${rider.name}"`, err);
-    } finally {
-      inFlight.delete(rider.id);
+    carries.push({ rider, parent, seatIndex, path });
+  }
+  if (!carries.length) return;
+
+  for (const carry of carries) {
+    const { rider, path } = carry;
+    // A multi-point path is always worth issuing: the rider has ground to cover
+    // even when it happens to end where it started, as on a loop.
+    carry.moves = path.length > 1 || !samePosition(rider, path[path.length - 1]);
+    // Claimed before the first await, so a carry overtaken by a newer one for
+    // the same rider (the mount's next checkpoint, say) knows to stand down.
+    // Only by carries that will move it: a re-layer must not cancel the retry of
+    // a movement still in flight.
+    if (carry.moves) {
+      carry.generation = (carryGeneration.get(rider.id) ?? 0) + 1;
+      carryGeneration.set(rider.id, carry.generation);
     }
+    enterFlight(rider.id);
+  }
+
+  try {
+    await nextTask();
+
+    // Draw order first, so each rider is already above its mount by the time it
+    // visibly arrives rather than surfacing a frame later. One at a time and
+    // nearest-first: a passenger's sort is derived from its own rider's, which
+    // may be changing in the step before it.
+    for (const { rider, parent, seatIndex } of carries) {
+      try {
+        await ensureLayering(rider, parent, seatIndex, { [MODULE_ID]: { carried: true } });
+      } catch (err) {
+        log.error(`failed to layer rider "${rider.name}"`, err);
+      }
+    }
+
+    // Movement all at once. Every route is already resolved above, so nothing
+    // here depends on another rider having arrived — and on v14, where `move`
+    // resolves only when the movement is complete, awaiting each in turn made a
+    // second passenger wait for the first to finish its whole journey.
+    await Promise.all(carries
+      .filter(carry => carry.moves)
+      .map(carry => carryOne(carry, autoRotate, duration)));
+  } finally {
+    for (const { rider } of carries) leaveFlight(rider.id);
+  }
+}
+
+/** Move one rider along its resolved route, unless a newer carry has taken over. */
+async function carryOne({ rider, path, generation }, autoRotate, duration) {
+  const isCurrent = () => carryGeneration.get(rider.id) === generation;
+  if (!isCurrent()) return;
+
+  try {
+    await moveRider(rider, path, autoRotate, duration, isCurrent);
+  } catch (err) {
+    log.error(`failed to carry rider "${rider.name}"`, err);
   }
 }
 
@@ -249,7 +329,7 @@ function seatFor(mountDoc, seatIndex) {
   return seats[seatIndex] ?? { dx: 0, dy: 0 };
 }
 
-async function moveRider(riderDoc, path, autoRotate = false, duration) {
+async function moveRider(riderDoc, path, autoRotate = false, duration, isCurrent = () => true) {
   const options = {
     [MODULE_ID]: { carried: true },
     // The mount has already paid for this movement and already resolved walls;
@@ -275,24 +355,87 @@ async function moveRider(riderDoc, path, autoRotate = false, duration) {
 
   // The waypoint API carries the action per movement rather than requiring the
   // token's persistent movementAction to be mutated and restored.
+  const destination = path[path.length - 1];
   const action = carryAction();
   if (typeof riderDoc.move === 'function' && action) {
-    return riderDoc.move(
-      // `explicit` and `checkpoint` are left off deliberately: the rider is not
-      // steering, so its route needs no user-placed waypoints and no points at
-      // which movement could be independently stopped or resumed. The mount
-      // already owns those decisions, and a checkpoint here would split the
-      // rider's movement into operations the mount never made.
-      path.map(point => ({ ...point, action, snapped: false })),
-      options,
-    );
+    // `explicit` and `checkpoint` are left off deliberately: the rider is not
+    // steering, so its route needs no user-placed waypoints and no points at
+    // which movement could be independently stopped or resumed. The mount
+    // already owns those decisions, and a checkpoint here would split the
+    // rider's movement into operations the mount never made.
+    const waypoints = path.map(point => ({ ...point, action, snapped: false }));
+
+    // A movement left open with nothing animating it is stale, not in progress,
+    // and v14 will not start a new movement on top of it. Clear it first.
+    if (hasStaleMovement(riderDoc)) stopUnfinishedMovement(riderDoc);
+
+    let completed = await riderDoc.move(waypoints, options);
+    if (!isCurrent() || arrived(completed, riderDoc, destination)) return completed;
+
+    // Refused. The usual cause is the rider's previous movement still being
+    // open — legitimately animating, since the rider starts a beat after its
+    // mount and so lands a beat after it too. Close it and try once more.
+    log.debug(`carried move of "${riderDoc.name}" was refused; closing its open movement and retrying`);
+    stopUnfinishedMovement(riderDoc);
+    await nextTask();
+    if (!isCurrent()) return completed;
+
+    completed = await riderDoc.move(waypoints, options);
+    if (!isCurrent() || arrived(completed, riderDoc, destination)) return completed;
+
+    // Last resort, so a refusal costs the animation rather than the rider.
+    log.warn(`carried move of "${riderDoc.name}" was refused twice; placing it on its seat directly`);
+    return riderDoc.update(destination, { ...options, animate: false });
   }
 
   // Defensive fallback: if the movement API is absent or renamed, a plain
   // update still puts the rider in the right place, just without displace
   // semantics. Better than the rider silently staying behind.
   log.warn('TokenDocument#move unavailable; falling back to a direct update');
-  return riderDoc.update(path[path.length - 1], { ...options, animate: false });
+  return riderDoc.update(destination, { ...options, animate: false });
+}
+
+/**
+ * Did a carried move do its job?
+ *
+ * `TokenDocument#move` resolves false when the movement was stopped or
+ * prevented. Stopped *after* arriving is still a rider in its seat, so position
+ * decides, not the flag alone. v13 builds that predate the boolean result
+ * resolve with something other than false, which counts as success.
+ */
+function arrived(completed, riderDoc, destination) {
+  return completed !== false || samePosition(riderDoc, destination);
+}
+
+/**
+ * Whether the rider has a movement still open that nothing is driving: left
+ * pending or paused, but with no animation playing to finish it.
+ *
+ * A token that is not drawn on this client's canvas cannot be checked for an
+ * animation, so an open movement on one counts as stale — carrying it is the
+ * only thing this client does with the rider, and the carry is what is waiting.
+ */
+function hasStaleMovement(riderDoc) {
+  if (!UNFINISHED.has(riderDoc.movement?.state)) return false;
+  const placeable = riderDoc.rendered ? riderDoc.object : null;
+  return !placeable?.movementAnimationPromise;
+}
+
+/**
+ * Stop the rider's open movement, if it has one this client is allowed to stop.
+ * Core only lets the user who started a movement stop it, which for a carried
+ * rider is the client carrying it — this one. Never throws: failing to close a
+ * movement is handled by the retry that follows, not by abandoning the carry.
+ */
+function stopUnfinishedMovement(riderDoc) {
+  if (!UNFINISHED.has(riderDoc.movement?.state)) return false;
+  if (typeof riderDoc.stopMovement !== 'function') return false;
+  try {
+    return riderDoc.stopMovement() === true;
+  } catch (err) {
+    log.debug(`could not stop the open movement of "${riderDoc.name}"`, err);
+    return false;
+  }
 }
 
 /**
