@@ -385,6 +385,119 @@ console.log('\nMount pace');
   globalThis.CONFIG = priorConfig;
 }
 
+// ── 9. Ownership revocation (v13 form) ───────────────────────────────────────
+// Dismounting has to take back the OWNER it granted. A plain update merges into
+// the stored ownership and keeps any key it omits, so the revoke payload is
+// checked for shape here, and tools/verify-v14.mjs runs it through v14's real
+// field code. With no `foundry.data.operators`, this exercises the `==`/`-=`
+// keys v13 understands.
+console.log('\nOwnership revocation (v13 form)');
+{
+  const M = 'scorpious187s-token-mounting';
+  const OWNER = 3;
+  const priorGlobals = { foundry: globalThis.foundry, CONST: globalThis.CONST, game: globalThis.game };
+  globalThis.foundry = { utils: { deepClone: v => structuredClone(v) } };   // no data.operators → v13 path
+  globalThis.CONST = { DOCUMENT_OWNERSHIP_LEVELS: { NONE: 0, LIMITED: 1, OBSERVER: 2, OWNER } };
+
+  const { revokeMountOwnership, revokeAllGrants } = await import(
+    'file://' + path.join(root, 'scripts/ownership.js').split(path.sep).join('/')
+  );
+
+  const check = (label, actual, expected) => {
+    if (actual === expected) pass(`${label} → ${actual}`);
+    else fail(`${label} → got ${actual}, expected ${expected}`);
+  };
+
+  // A minimal world: users, a mount actor that records the update it is sent,
+  // and rider tokens whose actors are owned by given users.
+  const users = ['alice', 'bob'].map(id => ({ id, isGM: false, active: true }));
+  globalThis.game = { user: { isGM: true }, users: { filter: fn => users.filter(fn) } };
+
+  const scenario = ({ ownership, grants, riders }) => {
+    const sent = [];
+    const actor = {
+      name: 'Horse', ownership,
+      getFlag: (scope, key) => (scope === M && key === 'grants' ? grants : undefined),
+      update: async change => { sent.push(change); },
+    };
+    const scene = { tokens: [] };
+    const mount = { id: 'mount', parent: scene, actor };
+    const tokens = riders.map(([id, owner]) => ({
+      id, parent: scene,
+      actor: { testUserPermission: (u) => u.id === owner },
+      getFlag: (scope, key) => (key === 'mount' ? { tokenId: 'mount', seat: 0 } : undefined),
+    }));
+    scene.tokens = tokens;
+    return { mount, tokens, sent, scene };
+  };
+
+  // Alice had no entry before mounting, so dismounting must remove her key.
+  {
+    const s = scenario({ ownership: { default: 0, alice: OWNER }, grants: { alice: null }, riders: [['r1', 'alice']] });
+    s.scene.tokens = [];                                 // r1 is the one leaving
+    await revokeMountOwnership(s.mount, s.tokens[0]);
+    const u = s.sent[0] ?? {};
+    check('update is sent', s.sent.length, 1);
+    check('ownership is replaced, not merged', '==ownership' in u && !('ownership' in u), true);
+    check('ungranted user removed', JSON.stringify(u['==ownership']), '{"default":0}');
+    check('grants flag cleared', u[`flags.${M}.-=grants`], null);
+  }
+
+  // An explicit earlier level comes back as it was.
+  {
+    const s = scenario({ ownership: { default: 0, alice: OWNER }, grants: { alice: 1 }, riders: [['r1', 'alice']] });
+    s.scene.tokens = [];
+    await revokeMountOwnership(s.mount, s.tokens[0]);
+    check('explicit prior level restored', s.sent[0]?.['==ownership']?.alice, 1);
+  }
+
+  // A GM changed Alice to OBSERVER while she rode; that decision stands.
+  {
+    const s = scenario({ ownership: { default: 0, alice: 2 }, grants: { alice: null }, riders: [['r1', 'alice']] });
+    s.scene.tokens = [];
+    await revokeMountOwnership(s.mount, s.tokens[0]);
+    check('level changed by GM is kept', s.sent[0]?.['==ownership']?.alice, 2);
+    check('its grant record is still cleared', s.sent[0]?.[`flags.${M}.-=grants`], null);
+  }
+
+  // Alice leaves while Bob still rides: only Alice's grant goes.
+  {
+    const s = scenario({
+      ownership: { default: 0, alice: OWNER, bob: OWNER },
+      grants: { alice: null, bob: null },
+      riders: [['r1', 'alice'], ['r2', 'bob']],
+    });
+    const leaving = s.tokens[0];
+    s.scene.tokens = [s.tokens[1]];
+    await revokeMountOwnership(s.mount, leaving);
+    const u = s.sent[0] ?? {};
+    check('leaver removed', 'alice' in (u['==ownership'] ?? { alice: 1 }), false);
+    check('remaining rider keeps OWNER', u['==ownership']?.bob, OWNER);
+    check("only the leaver's grant record is deleted", u[`flags.${M}.grants.-=alice`], null);
+    check('the grants flag itself survives', `flags.${M}.-=grants` in u, false);
+  }
+
+  // Two riders owned by the same player: one leaving withdraws nothing.
+  {
+    const s = scenario({ ownership: { default: 0, alice: OWNER }, grants: { alice: null }, riders: [['r1', 'alice'], ['r2', 'alice']] });
+    const leaving = s.tokens[0];
+    s.scene.tokens = [s.tokens[1]];
+    await revokeMountOwnership(s.mount, leaving);
+    check('still-entitled user → no update', s.sent.length, 0);
+  }
+
+  // Deleting a mount clears every grant at once.
+  {
+    const s = scenario({ ownership: { default: 0, alice: OWNER, bob: 1 }, grants: { alice: null }, riders: [] });
+    await revokeAllGrants(s.mount);
+    const u = s.sent[0] ?? {};
+    check('revokeAllGrants replaces ownership', JSON.stringify(u['==ownership']), '{"default":0,"bob":1}');
+    check('revokeAllGrants clears the flag', u[`flags.${M}.-=grants`], null);
+  }
+
+  Object.assign(globalThis, priorGlobals);
+}
+
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log('');
 if (failures) {

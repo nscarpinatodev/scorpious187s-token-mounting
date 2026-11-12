@@ -27,9 +27,11 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 
 const root = path.resolve(import.meta.dirname, '..');
+const REVOCATION_FLAG = '--revocation';
 const BACKSLASH = String.fromCharCode(92);
 
 let failures = 0;
@@ -187,7 +189,89 @@ async function verify(appRoot) {
     check(`mount pace: ${action}`, segmentSpeed({}, action), speed);
   }
 
+  // Ownership revocation, in a child process. Each install's `common` package
+  // extends built-in prototypes, and a second install cannot redefine them in a
+  // process the first has already loaded into — so each gets a clean one.
+  const child = spawnSync(process.execPath, [fileURLToPath(import.meta.url), REVOCATION_FLAG, appRoot], {
+    encoding: 'utf8',
+  });
+  process.stdout.write(child.stdout ?? '');
+  if (child.stderr) process.stderr.write(child.stderr);
+  if (child.status !== 0) failures += Math.max(1, (child.stderr?.match(/FAIL/g) ?? []).length);
+
   return true;
+}
+
+/* ── Ownership revocation (runs in its own process) ─────────────────────────*/
+
+/**
+ * A dismount that sends the ownership map with the rider's owner deleted from it
+ * looks right in every shape check and still leaves the granted OWNER in place,
+ * because object fields merge. Only the real DocumentOwnershipField settles it,
+ * so this loads Foundry's `common` package and lets the module update a model
+ * with it exactly as `Document#update` would: expand the keys, then
+ * `updateSource`.
+ */
+async function revocationCheck(appRoot) {
+  const release = generationOf(appRoot);
+  const check = (label, actual, expected) => {
+    if (actual === expected) pass(`${label} → ${actual}`);
+    else fail(`${label} → got ${actual}, expected ${expected}`);
+  };
+
+  try {
+    const common = pathToFileURL(path.join(appRoot, 'common')).href;
+    const warnings = [];
+    globalThis.logger = { warn: (...a) => warnings.push(a.join(' ')), info() {}, error() {}, debug() {}, log() {} };
+    await import(`${common}/primitives/_module.mjs`);
+    const constants = await import(`${common}/constants.mjs`);
+    const utils = await import(`${common}/utils/_module.mjs`);
+    const data = await import(`${common}/data/_module.mjs`);
+    const abstract = await import(`${common}/abstract/_module.mjs`);
+    globalThis.CONST = constants;
+    globalThis.foundry = { utils, data, abstract, CONST: constants };
+    globalThis.game = { user: { isGM: true }, users: { filter: () => [] }, release };
+
+    const { revokeMountOwnership } = await import(
+      `${pathToFileURL(path.join(root, 'scripts/ownership.js')).href}?v14=${release.build}`
+    );
+
+    class Owned extends abstract.DataModel {
+      static defineSchema() {
+        return { ownership: new data.fields.DocumentOwnershipField(), flags: new data.fields.ObjectField() };
+      }
+    }
+    const MODULE = 'scorpious187s-token-mounting';
+    const player = 'player1000000001';
+    const keeper = 'keeper0000000001';
+    const model = new Owned({
+      ownership: { default: 0, [keeper]: 2, [player]: 3 },
+      flags: { [MODULE]: { grants: { [player]: null } }, 'other-module': { keep: true } },
+    });
+    const actor = {
+      name: 'Horse',
+      get ownership() { return model._source.ownership; },
+      getFlag: (scope, key) => model._source.flags?.[scope]?.[key],
+      update: async change => model.updateSource(utils.expandObject(change)),
+    };
+
+    await revokeMountOwnership({ id: 'mount', parent: { tokens: [] }, actor }, { id: 'rider' });
+
+    check('dismount removes the granted OWNER', player in model._source.ownership, false);
+    check('other users keep their level', model._source.ownership[keeper], 2);
+    check('grant record cleared', 'grants' in (model._source.flags[MODULE] ?? {}), false);
+    check("other modules' flags untouched", model._source.flags['other-module']?.keep, true);
+    check('no deprecated update syntax', warnings.length, 0);
+  } catch (err) {
+    fail(`ownership revocation could not be verified — ${err.message.split('\n')[0]}`);
+  }
+}
+
+// A child started by verify() for a single install runs only the revocation
+// check, then exits before the driver below can loop over installs again.
+if (process.argv[2] === REVOCATION_FLAG) {
+  await revocationCheck(process.argv[3]);
+  process.exit(failures ? 1 : 0);
 }
 
 /* ── Drive ──────────────────────────────────────────────────────────────────*/

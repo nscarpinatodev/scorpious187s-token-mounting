@@ -27,6 +27,51 @@ import { log } from './logger.js';
  * rather than assuming a default and quietly widening or removing access.
  */
 
+/**
+ * Update fragments that remove data, in whichever form the running core accepts.
+ *
+ * Revoking a grant means taking a user's key *out* of the actor's ownership,
+ * and a plain update cannot do that: Foundry diffs an object field against what
+ * it holds and merges the difference, so a key missing from the update is
+ * simply kept. Sending the ownership map with the user deleted from it — which
+ * is what this used to do — left every granted OWNER in place.
+ *
+ * Deleting just that one key does not work either. Ownership validates every
+ * value as an ownership level, so a deletion marker inside it fails validation
+ * and the whole update is refused. Core's own Ownership dialog replaces the map
+ * outright instead, and so does this.
+ *
+ * v14 spells both operations as operator values; the `==`/`-=` key syntax it
+ * deprecates is what v13 understands natively, so that is the fallback.
+ */
+function replaceField(key, value) {
+  const ForcedReplacement = foundry.data?.operators?.ForcedReplacement;
+  return ForcedReplacement ? { [key]: ForcedReplacement.create(value) } : { [`==${key}`]: value };
+}
+
+/** Remove `key` from the object at dotted path `parent`. */
+function deleteKey(parent, key) {
+  const ForcedDeletion = foundry.data?.operators?.ForcedDeletion;
+  return ForcedDeletion
+    ? { [`${parent}.${key}`]: new ForcedDeletion() }
+    : { [`${parent}.-=${key}`]: null };
+}
+
+const GRANTS_PATH = `flags.${MODULE_ID}.${FLAG_GRANTS}`;
+
+/**
+ * Put one user's ownership entry back the way it was before we granted OWNER.
+ *
+ * Only while it is still the OWNER we granted. If a GM changed this user's level
+ * while they were mounted, that was a deliberate decision made after ours, and
+ * restoring the pre-mount value over it would quietly undo it.
+ */
+function restoreEntry(ownership, userId, previous) {
+  if (ownership[userId] !== CONST.DOCUMENT_OWNERSHIP_LEVELS.OWNER) return;
+  if (previous === null || previous === undefined) delete ownership[userId];
+  else ownership[userId] = previous;
+}
+
 /** Users who own the rider and should therefore be able to drive the mount. */
 function ridersOwners(riderDoc) {
   const actor = riderDoc?.actor;
@@ -93,26 +138,26 @@ export async function revokeMountOwnership(mountDoc, leavingRiderDoc) {
   }
 
   const ownership = foundry.utils.deepClone(actor.ownership ?? {});
-  let changed = false;
+  const revoked = [];
 
   for (const [userId, previous] of Object.entries(grants)) {
     if (stillEntitled.has(userId)) continue;
-
-    if (previous === null || previous === undefined) delete ownership[userId];
-    else ownership[userId] = previous;
-
-    delete grants[userId];
-    changed = true;
+    restoreEntry(ownership, userId, previous);
+    revoked.push(userId);
   }
 
-  if (!changed) return;
+  if (!revoked.length) return;
 
-  const update = { ownership };
-  if (Object.keys(grants).length) update[`flags.${MODULE_ID}.${FLAG_GRANTS}`] = grants;
-  else update[`flags.${MODULE_ID}.-=${FLAG_GRANTS}`] = null;
+  // The grant records need the same care as ownership: sending a smaller
+  // `grants` object would merge into the stored one and keep the departed
+  // users' entries, and a stale record gets "restored" again later.
+  const remaining = Object.keys(grants).filter(id => !revoked.includes(id));
+  const flagUpdate = remaining.length
+    ? Object.assign({}, ...revoked.map(id => deleteKey(GRANTS_PATH, id)))
+    : deleteKey(`flags.${MODULE_ID}`, FLAG_GRANTS);
 
-  await actor.update(update);
-  log.debug(`revoked mount ownership on "${actor.name}"`);
+  await actor.update({ ...replaceField('ownership', ownership), ...flagUpdate });
+  log.debug(`revoked mount ownership on "${actor.name}" from ${revoked.length} user(s)`);
 }
 
 /**
@@ -126,10 +171,10 @@ export async function revokeAllGrants(mountDoc) {
   if (!grants || !Object.keys(grants).length) return;
 
   const ownership = foundry.utils.deepClone(actor.ownership ?? {});
-  for (const [userId, previous] of Object.entries(grants)) {
-    if (previous === null || previous === undefined) delete ownership[userId];
-    else ownership[userId] = previous;
-  }
+  for (const [userId, previous] of Object.entries(grants)) restoreEntry(ownership, userId, previous);
 
-  await actor.update({ ownership, [`flags.${MODULE_ID}.-=${FLAG_GRANTS}`]: null });
+  await actor.update({
+    ...replaceField('ownership', ownership),
+    ...deleteKey(`flags.${MODULE_ID}`, FLAG_GRANTS),
+  });
 }
