@@ -1,7 +1,8 @@
 import { MODULE_ID } from './constants.js';
 import { carryAction, movementDuration } from './carry-action.js';
 import { allRiders, getRiders, mountLink, isMount } from './relations.js';
-import { seatPosition, generateSeats } from './seating.js';
+import { seatPosition, generateSeats, pathRotations } from './seating.js';
+import { seatLayoutOf, FLAG_SEAT_LAYOUT } from './token-options.js';
 import { ensureLayering } from './layering.js';
 import { log } from './logger.js';
 
@@ -97,20 +98,35 @@ export function registerMovementSync() {
       log.error('failed to measure mount animation; riders use their default pace', err);
     }
 
-    carryRiders(tokenDoc, path.length ? path : null, movement?.autoRotate === true, { duration })
+    carryRiders(tokenDoc, path.length ? path : null, movement?.autoRotate === true, {
+      duration,
+      // Where the route started and how it was made, so an auto-rotating mount's
+      // facing can be worked out at every point and the seats turned with it.
+      origin: movement?.origin,
+      method: movement?.method,
+    })
       .catch(err => log.error('failed to carry riders', err));
   });
 
-  // Draw order is not movement, so it never reaches moveToken. A mount's `sort`
-  // changing still has to pull its riders back above it, or they render
-  // underneath. Position is deliberately not handled here — see above.
+  // Changes that are not movement never reach moveToken but still move seats:
+  // `sort` has to pull riders back above the mount, and turning the mount by
+  // hand, toggling Lock Rotation or choosing a different layout all put the
+  // seats somewhere new. Rotation that arrives *with* a move is auto-rotation,
+  // and moveToken already handles it along the route — reseating here as well
+  // would carry the riders twice.
   Hooks.on('updateToken', (tokenDoc, changed, options) => {
     if (options?.[MODULE_ID]?.carried) return;
     if (inFlight.has(tokenDoc.id)) return;
-    if (!('sort' in changed)) return;
+
+    const moved = ['x', 'y', 'elevation', 'width', 'height'].some(key => key in changed);
+    const reseat = 'sort' in changed
+      || ('rotation' in changed && !moved)
+      || 'lockRotation' in changed
+      || foundry.utils.hasProperty(changed, `flags.${MODULE_ID}.${FLAG_SEAT_LAYOUT}`);
+    if (!reseat) return;
     if (!isMount(tokenDoc)) return;
 
-    carryRiders(tokenDoc).catch(err => log.error('failed to re-layer riders', err));
+    carryRiders(tokenDoc).catch(err => log.error('failed to reseat riders', err));
   });
 }
 
@@ -147,13 +163,17 @@ function shouldIMove(riderDoc) {
  * synthetic points we derive for chained riders carry only a position, so the
  * rest falls back to the document.
  */
-function frameAt(mountDoc, point) {
+function frameAt(mountDoc, point, rotation) {
   return {
     x: point.x ?? mountDoc.x,
     y: point.y ?? mountDoc.y,
     elevation: point.elevation ?? mountDoc.elevation,
     width: point.width ?? mountDoc.width,
     height: point.height ?? mountDoc.height,
+    // Waypoints carry no facing, so an auto-rotating route supplies one per
+    // point; otherwise the token keeps the rotation it has.
+    rotation: rotation ?? mountDoc.rotation,
+    lockRotation: mountDoc.lockRotation,
     parent: mountDoc.parent,
   };
 }
@@ -165,7 +185,9 @@ function frameAt(mountDoc, point) {
  * @param {boolean} autoRotate      Whether the mount's movement turned it to
  *                                  face its direction of travel.
  */
-async function carryRiders(mountDoc, mountPath = null, autoRotate = false, { force = false, duration } = {}) {
+async function carryRiders(mountDoc, mountPath = null, autoRotate = false, {
+  force = false, duration, origin, method,
+} = {}) {
   // Resolve the whole chain from this mount down, so a passenger on a rider
   // moves too. allRiders is cycle-guarded, and returns nearest-first — which
   // matters below, because each rider's path is derived from its parent's.
@@ -177,6 +199,15 @@ async function carryRiders(mountDoc, mountPath = null, autoRotate = false, { for
   // rider's resulting route then seeds the level below, so a passenger on a
   // knight on a dragon follows the knight, which follows the dragon.
   const paths = new Map([[mountDoc.id, mountPath]]);
+
+  // The facing at each point of the route, when the mount turns as it goes.
+  // Seats turn with the mount, so a rider rounding a corner swings round with
+  // it rather than staying where the seat was before the turn. Shared by every
+  // level of the chain: carried riders turn with the same decision as the
+  // mount, so they face the same way at the same point.
+  const rotations = autoRotate && mountPath?.length
+    ? pathRotations(origin ?? mountPath[0], mountPath, mountDoc.rotation, method)
+    : null;
 
   for (const rider of riders) {
     // The seat is relative to whatever this rider is directly riding, which is
@@ -191,7 +222,7 @@ async function carryRiders(mountDoc, mountPath = null, autoRotate = false, { for
     // Same seat offset applied at every point of the parent's route, so the
     // rider traces the parent's shape rather than a chord across it.
     const path = parentPath?.length
-      ? parentPath.map(point => seatPosition(frameAt(parent, point), rider, seat))
+      ? parentPath.map((point, i) => seatPosition(frameAt(parent, point, rotations?.[i]), rider, seat))
       : [seatPosition(parent, rider, seat)];
 
     // Recorded even when this client is not the one moving the rider, so the
@@ -245,7 +276,7 @@ function samePosition(riderDoc, target) {
 function seatFor(mountDoc, seatIndex) {
   const riders = getRiders(mountDoc);
   const highest = riders.reduce((max, r) => Math.max(max, mountLink(r)?.seat ?? 0), 0);
-  const seats = generateSeats(Math.max(riders.length, highest + 1, seatIndex + 1));
+  const seats = generateSeats(Math.max(riders.length, highest + 1, seatIndex + 1), seatLayoutOf(mountDoc));
   return seats[seatIndex] ?? { dx: 0, dy: 0 };
 }
 
@@ -305,4 +336,20 @@ async function moveRider(riderDoc, path, autoRotate = false, duration) {
  */
 export async function resnap(mountDoc) {
   await carryRiders(mountDoc, null, false, { force: true });
+}
+
+/**
+ * Re-seat the riders of every mount in the world, after the world's default
+ * layout changes. Only top-level mounts are walked: carrying one carries its
+ * whole chain, so starting from a rider as well would seat its passengers
+ * twice. Not forced — this runs on every client, and the usual election picks
+ * the one that moves each rider.
+ */
+export function reseatAll() {
+  for (const scene of game.scenes ?? []) {
+    for (const tokenDoc of scene.tokens ?? []) {
+      if (!isMount(tokenDoc) || mountLink(tokenDoc)) continue;
+      carryRiders(tokenDoc).catch(err => log.error('failed to reseat riders', err));
+    }
+  }
 }

@@ -1,6 +1,8 @@
 import {
   MODULE_ID, SETTING_MAX_RIDERS, SETTING_GRANT_OWNERSHIP, SETTING_DRAG_TO_MOUNT,
+  SETTING_SEAT_LAYOUT,
 } from './constants.js';
+import { SEAT_LAYOUTS, DEFAULT_SEAT_LAYOUT } from './seating.js';
 
 /**
  * Per-token mounting options.
@@ -20,6 +22,7 @@ export const FLAG_MOUNTABLE = 'mountable';
 export const FLAG_RIDEABLE = 'rideable';
 export const FLAG_DRAG_MOUNT = 'dragMount';
 export const FLAG_GRANT_MODE = 'grantMode';
+export const FLAG_SEAT_LAYOUT = 'seatLayout';
 
 /**
  * Values for the per-token overrides.
@@ -108,4 +111,31 @@ export function acceptsDragMount(mountDoc) {
  */
 export function grantsOwnership(mountDoc) {
   return resolveOverride(mountDoc, FLAG_GRANT_MODE, SETTING_GRANT_OWNERSHIP, true);
+}
+
+/**
+ * Labels for the seat layouts, as full localization keys. Spelled out rather
+ * than built from the layout name so every key is visible to the localization
+ * check in tools/check.mjs.
+ */
+export const SEAT_LAYOUT_LABELS = {
+  grid: 'S187TM.Layout.Grid',
+  center: 'S187TM.Layout.Center',
+  corners: 'S187TM.Layout.Corners',
+  row: 'S187TM.Layout.Row',
+  column: 'S187TM.Layout.Column',
+  ring: 'S187TM.Layout.Ring',
+};
+
+/**
+ * Where riders sit on this mount. A per-token choice wins; `default`, unset or
+ * anything unrecognised defers to the world setting, which itself falls back to
+ * the original grid — so a world that never touches this lays out exactly as
+ * before.
+ */
+export function seatLayoutOf(mountDoc) {
+  const own = mountDoc?.getFlag?.(MODULE_ID, FLAG_SEAT_LAYOUT);
+  if (SEAT_LAYOUTS.includes(own)) return own;
+  const world = worldSetting(SETTING_SEAT_LAYOUT, DEFAULT_SEAT_LAYOUT);
+  return SEAT_LAYOUTS.includes(world) ? world : DEFAULT_SEAT_LAYOUT;
 }

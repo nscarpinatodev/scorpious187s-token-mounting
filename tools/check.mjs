@@ -498,6 +498,85 @@ console.log('\nOwnership revocation (v13 form)');
   Object.assign(globalThis, priorGlobals);
 }
 
+// ── 10. Seat layouts ─────────────────────────────────────────────────────────
+// Layouts are pure geometry in the mount's own frame, turned by its rotation,
+// so the placements a table will actually see can be pinned exactly.
+console.log('\nSeat layouts');
+{
+  const seating = await import('file://' + path.join(root, 'scripts/seating.js').split(path.sep).join('/'));
+  const { generateSeats, seatPosition, pathRotations, SEAT_LAYOUTS } = seating;
+  const { seatLayoutOf } = await import('file://' + path.join(root, 'scripts/token-options.js').split(path.sep).join('/'));
+
+  const check = (label, actual, expected) => {
+    if (actual === expected) pass(`${label} → ${actual}`);
+    else fail(`${label} → got ${actual}, expected ${expected}`);
+  };
+  const pairs = seats => seats.map(s => `${s.dx},${s.dy}`).join(' ');
+
+  // Grid is the original behaviour and must not move for existing worlds.
+  check('grid is the default', pairs(generateSeats(4)), pairs(generateSeats(4, 'grid')));
+  check('grid layout unchanged', pairs(generateSeats(4)), '-0.25,-0.25 0.25,-0.25 -0.25,0.25 0.25,0.25');
+  check('unknown layout falls back to grid', pairs(generateSeats(3, 'nonsense')), pairs(generateSeats(3, 'grid')));
+
+  check('centre stacks every rider', pairs(generateSeats(3, 'center')), '0,0 0,0 0,0');
+  check('row runs side by side', pairs(generateSeats(3, 'row')), '-0.25,0 0,0 0.25,0');
+  check('column puts seat 0 at the front', pairs(generateSeats(3, 'column')), '0,0.25 0,0 0,-0.25');
+  check('one-seat column is centred', pairs(generateSeats(1, 'column')), '0,0');
+  check('corners fill front pair, back pair, then centre', pairs(generateSeats(5, 'corners')),
+    '-0.25,0.25 0.25,0.25 -0.25,-0.25 0.25,-0.25 0,0');
+  check('corners give nine distinct seats', new Set(generateSeats(9, 'corners').map(s => `${s.dx},${s.dy}`)).size, 9);
+  check('a tenth corner seat reuses the first', pairs([generateSeats(10, 'corners')[9]]), pairs([generateSeats(1, 'corners')[0]]));
+  check('ring starts at the front', pairs(generateSeats(4, 'ring')), '0,0.3 -0.3,0 0,-0.3 0.3,0');
+
+  let offMount = [];
+  for (const layout of SEAT_LAYOUTS) {
+    for (let n = 1; n <= 12; n++) {
+      if (generateSeats(n, layout).some(s => Math.abs(s.dx) > 0.5 || Math.abs(s.dy) > 0.5)) offMount.push(`${layout}/${n}`);
+    }
+  }
+  check('every layout stays on the mount (1–12 riders)', offMount.join(', ') || 'none', 'none');
+
+  // Rotation. Front is +dy at rotation 0; Foundry's rotation is clockwise on screen.
+  const grid = { grid: { size: 100 } };
+  const rider = { width: 1, height: 1 };
+  const front = { dx: 0, dy: 0.25 };
+  const at = (rotation, extra = {}) => {
+    const p = seatPosition({ x: 0, y: 0, width: 1, height: 1, rotation, parent: grid, ...extra }, rider, front);
+    return `${p.x},${p.y}`;
+  };
+  check('front seat, facing down (0°)', at(0), '0,25');
+  check('front seat turns left at 90°', at(90), '-25,0');
+  check('front seat turns up at 180°', at(180), '0,-25');
+  check('front seat turns right at -90°', at(-90), '25,0');
+  check('Lock Rotation keeps seats fixed', at(90, { lockRotation: true }), '0,25');
+  // A 2×1 wagon (200×100 px, centre 100,50): a seat a quarter along its length
+  // is 50 px right of centre facing down, and 50 px below centre once turned.
+  const wagonAt = rotation => {
+    const p = seatPosition({ x: 0, y: 0, width: 2, height: 1, rotation, parent: grid }, rider, { dx: 0.25, dy: 0 });
+    return `${p.x},${p.y}`;
+  };
+  check('a long mount, unturned', wagonAt(0), '100,0');
+  check('a long mount turns its long axis', wagonAt(90), '50,50');
+
+  // Facing along a route, as core auto-rotates: segment angle less 90°.
+  const route = [{ x: 0, y: 100 }, { x: 100, y: 100 }, { x: 100, y: 100 }, { x: 100, y: 0 }];
+  check('facing along a route', pathRotations({ x: 0, y: 0 }, route, 45).join(' '), '0 -90 -90 -180');
+  check('a standstill keeps the starting facing', pathRotations({ x: 0, y: 0 }, [{ x: 0, y: 0 }], 45).join(' '), '45');
+  check('undo faces backwards along the route', pathRotations({ x: 0, y: 0 }, [{ x: 0, y: 100 }], 0, 'undo').join(' '), '180');
+
+  // Which layout a mount uses: its own choice, else the world's, else grid.
+  const mount = flag => ({ getFlag: (scope, key) => (key === 'seatLayout' ? flag : undefined) });
+  const priorGame = globalThis.game;
+  globalThis.game = undefined;
+  check('token choice wins', seatLayoutOf(mount('column')), 'column');
+  check('Default with no world setting → grid', seatLayoutOf(mount('default')), 'grid');
+  check('unrecognised choice → grid', seatLayoutOf(mount('sideways')), 'grid');
+  globalThis.game = { settings: { get: () => 'ring' } };
+  check('Default uses the world setting', seatLayoutOf(mount('default')), 'ring');
+  check('token choice still beats the world', seatLayoutOf(mount('row')), 'row');
+  globalThis.game = priorGame;
+}
+
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log('');
 if (failures) {

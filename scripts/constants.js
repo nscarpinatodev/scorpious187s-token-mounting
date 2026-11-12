@@ -28,6 +28,7 @@ export const SETTING_DRAG_TO_MOUNT = 'dragToMount';
 export const SETTING_DETECT_MOUNTS = 'detectMounts';
 export const SETTING_MOUNT_NAMES = 'mountNames';
 export const SETTING_DEBUG = 'debug';
+export const SETTING_SEAT_LAYOUT = 'seatLayout';
 
 /**
  * dnd5e-only settings. Registered unconditionally so `game.settings.get` always

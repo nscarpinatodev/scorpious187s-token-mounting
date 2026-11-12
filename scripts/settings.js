@@ -1,10 +1,13 @@
 import {
   MODULE_ID, SETTING_GRANT_OWNERSHIP, SETTING_MAX_RIDERS, SETTING_DEBUG,
   SETTING_DRAG_TO_MOUNT, SETTING_HOSTILE_CHECK, SETTING_HOSTILE_DC,
-  SETTING_DETECT_MOUNTS, SETTING_MOUNT_NAMES,
+  SETTING_DETECT_MOUNTS, SETTING_MOUNT_NAMES, SETTING_SEAT_LAYOUT,
 } from './constants.js';
 import { isDnd5e } from './systems/dnd5e.js';
 import { DEFAULT_MOUNT_NAMES } from './mount-detection.js';
+import { SEAT_LAYOUTS, DEFAULT_SEAT_LAYOUT } from './seating.js';
+import { SEAT_LAYOUT_LABELS } from './token-options.js';
+import { reseatAll } from './movement.js';
 
 export function registerSettings() {
   game.settings.register(MODULE_ID, SETTING_GRANT_OWNERSHIP, {
@@ -50,6 +53,21 @@ export function registerSettings() {
     config: true,
     type: String,
     default: DEFAULT_MOUNT_NAMES.join(', '),
+  });
+
+  game.settings.register(MODULE_ID, SETTING_SEAT_LAYOUT, {
+    name: game.i18n.localize('S187TM.Settings.SeatLayout'),
+    hint: game.i18n.localize('S187TM.Settings.SeatLayoutHint'),
+    scope: 'world',
+    config: true,
+    type: String,
+    choices: Object.fromEntries(
+      SEAT_LAYOUTS.map(layout => [layout, game.i18n.localize(SEAT_LAYOUT_LABELS[layout])]),
+    ),
+    default: DEFAULT_SEAT_LAYOUT,
+    // Riders already aboard move to their new seats rather than waiting for
+    // their mount's next step.
+    onChange: () => reseatAll(),
   });
 
   // Registered whatever the system, so `game.settings.get` always resolves and

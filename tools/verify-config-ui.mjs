@@ -134,8 +134,8 @@ for (const [label, markup] of Object.entries(shapes)) {
   // Every control must carry a real document path or nothing round-trips.
   const names = [...fieldset.querySelectorAll('[name]')].map(e => e.getAttribute('name'));
   const prefixed = names.every(n => n.startsWith(`flags.${MODULE_ID}.`));
-  if (names.length !== 5 || !prefixed) {
-    fail(`${label} — expected 5 flag-pathed fields, got: ${names.join(', ') || '(none)'}`);
+  if (names.length !== 6 || !prefixed) {
+    fail(`${label} — expected 6 flag-pathed fields, got: ${names.join(', ') || '(none)'}`);
     continue;
   }
 
@@ -144,6 +144,31 @@ for (const [label, markup] of Object.entries(shapes)) {
     ? 'form (fallback)'
     : `${host.tagName.toLowerCase()}.${host.dataset.applicationPart ?? host.dataset.tab ?? host.className}`;
   pass(`${label} → ${where}`);
+}
+
+/* ── Seat Layout choice ─────────────────────────────────────────────────────*/
+
+console.log('\nSeat Layout field');
+{
+  const choices = (stored) => {
+    const sheet = form(shapes['part id + tab + nav (as v14 renders it)']);
+    const flags = { seatLayout: stored };
+    handler({ token: { getFlag: (scope, key) => flags[key] }, setPosition() {} }, sheet);
+    const select = sheet.querySelector(`select[name="flags.${MODULE_ID}.seatLayout"]`);
+    return select ? { values: [...select.options].map(o => o.value).join(','), selected: select.value } : null;
+  };
+
+  const unset = choices(undefined);
+  if (!unset) fail('Seat Layout select missing');
+  else {
+    if (unset.values === 'default,grid,center,corners,row,column,ring') pass(`options → ${unset.values}`);
+    else fail(`options → got ${unset.values}`);
+    if (unset.selected === 'default') pass('unset token shows Default');
+    else fail(`unset token shows ${unset.selected}, expected default`);
+    const chosen = choices('column');
+    if (chosen?.selected === 'column') pass('a stored layout is shown as selected');
+    else fail(`stored layout shows ${chosen?.selected}, expected column`);
+  }
 }
 
 /* ── Which object the flags are read from ───────────────────────────────────*/

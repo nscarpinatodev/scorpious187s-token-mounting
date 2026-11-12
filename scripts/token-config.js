@@ -1,8 +1,10 @@
 import { MODULE_ID } from './constants.js';
 import {
   FLAG_CAPACITY, FLAG_MOUNTABLE, FLAG_RIDEABLE, FLAG_DRAG_MOUNT, FLAG_GRANT_MODE,
+  FLAG_SEAT_LAYOUT, SEAT_LAYOUT_LABELS,
   OPTION_DEFAULT, OPTION_ALWAYS, OPTION_NEVER,
 } from './token-options.js';
+import { SEAT_LAYOUTS } from './seating.js';
 import { log } from './logger.js';
 
 /**
@@ -134,6 +136,17 @@ function injectFields(app, element) {
     ).join('');
   };
 
+  /** Seat layouts, led by Default so the token can defer to the world setting. */
+  const layouts = () => {
+    const current = flag(FLAG_SEAT_LAYOUT) ?? OPTION_DEFAULT;
+    return [
+      [OPTION_DEFAULT, 'S187TM.Option.Default'],
+      ...SEAT_LAYOUTS.map(layout => [layout, SEAT_LAYOUT_LABELS[layout]]),
+    ].map(([value, label]) =>
+      `<option value="${value}" ${current === value ? 'selected' : ''}>${escape(t(label))}</option>`
+    ).join('');
+  };
+
   const fieldset = document.createElement('fieldset');
   fieldset.className = `${MODULE_ID}-config`;
   fieldset.innerHTML = `
@@ -179,6 +192,14 @@ function injectFields(app, element) {
         <select name="${name(FLAG_GRANT_MODE)}">${override(FLAG_GRANT_MODE)}</select>
       </div>
       <p class="hint">${escape(t('S187TM.Config.GrantModeHint'))}</p>
+    </div>
+
+    <div class="form-group">
+      <label>${escape(t('S187TM.Config.SeatLayout'))}</label>
+      <div class="form-fields">
+        <select name="${name(FLAG_SEAT_LAYOUT)}">${layouts()}</select>
+      </div>
+      <p class="hint">${escape(t('S187TM.Config.SeatLayoutHint'))}</p>
     </div>
   `;
 
