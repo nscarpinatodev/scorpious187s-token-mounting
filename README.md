@@ -125,8 +125,8 @@ passenger stepping off will not strip control from the pilot still aboard.
 2. **Target** the token to ride (the same gesture as targeting for an attack).
 3. Click the horse icon on the token HUD.
 
-Dismount with the same button. Riders are seated automatically; with several
-aboard they are laid out in rows across the mount's footprint.
+Dismount with the same button. Riders are seated automatically, in whichever
+*seat layout* the mount uses — see below.
 
 Or turn on **Mount by Dragging Onto** for a token, and dragging anything onto it
 mounts it — no targeting, no HUD. It is off by default and per-token on purpose:
@@ -149,6 +149,30 @@ Piloting the mount directly still works — this is an additional gesture, not a
 replacement. Either way the mount is the token that moves, so the turn is
 measured against the mount's speed.
 
+### Seat layouts
+
+Where riders sit is set by the world **Seat Layout** setting, and per token by
+**Seat Layout** in Token Config:
+
+| Layout | Riders sit |
+|---|---|
+| Grid | in rows across the mount, centred — the default, and the only layout before 0.5.0 |
+| Centre | all on the middle: a single saddle, or a swarm that should read as one rider |
+| Corners | on the four corners, front pair first, then the centre and the middle of each edge |
+| Row (side by side) | in a line across the mount |
+| Column (nose to tail) | in a line along the mount, with seat 0 — the pilot — at the front |
+| Around the edge | evenly round the mount, starting at the front |
+
+**Seats turn with the mount.** A mount's front is the bottom edge of its art at
+rotation 0, the convention core's auto-rotate is built on. Turn a mount by hand,
+or let it auto-rotate along a route, and its riders swing round with it, so a
+column stays nose to tail whichever way the horse faces. A token with **Lock
+Rotation** keeps its art upright, so its seats stay put too.
+
+> **Upgrading from 0.4:** turning applies to every layout, Grid included.
+> Riders on a mount that is already rotated move to their turned seats the next
+> time it moves or is turned. A mount at rotation 0 seats exactly as before.
+
 ### Per-token options
 
 In **Token Config → Identity**, under *Mounting*:
@@ -160,6 +184,7 @@ In **Token Config → Identity**, under *Mounting*:
 | Mount by Dragging Onto | the world **Mount by Dragging** setting |
 | Can Ride | yes |
 | Grant Ownership on Mounting | the world **Grant Mount Ownership** setting |
+| Seat Layout | the world **Seat Layout** setting |
 
 They live on the TokenDocument rather than the actor, because two tokens of the
 same actor can legitimately differ — the wagon being driven has seats, the one
@@ -297,8 +322,13 @@ rewrite has not been re-tested on v13, and `preMoveToken` — which steering and
 drag-to-mount both depend on — is unconfirmed on that version. On v13, expect
 carrying to work and check steering before relying on it.
 
-Two things remain unexercised in a real world. Chained mounts (a rider that is
+Some things remain unexercised in a real world. Chained mounts (a rider that is
 itself a mount) are cycle-guarded and covered by the offline harness but have
-not been played. And rotating a mount *without* moving it does not turn its
-riders — rotation is not a movement field, so that change never reaches the
-movement hooks.
+not been played. Seat layouts and seats turning with the mount, new in 0.5.0,
+are covered the same way: the offline harness pins every layout, rotation and
+route facing, but none has been played yet.
+
+Dismounting takes back the ownership it granted. Before 0.5.0 it did not: the
+revoke was merged into the actor's ownership rather than replacing it, so
+granted OWNER levels survived. That is checked against v14's real ownership
+field; the v13 form of the update is checked offline only.
