@@ -13,6 +13,7 @@ import {
 import { registerTokenHUD } from './hud.js';
 import { registerTokenConfig } from './token-config.js';
 import { registerSteering, PILOT_SEAT } from './steering.js';
+import { installRidingDrag } from './riding-drag.js';
 import { registerDnd5e, isDnd5e } from './systems/dnd5e.js';
 import { registerMountDetection, looksLikeMount } from './mount-detection.js';
 import {
@@ -60,6 +61,16 @@ Hooks.once('init', () => {
   });
 
   log.info('Initialized');
+});
+
+// `setup`, not `init`: systems and other modules install their Token class
+// during `init`, and ours has to extend whichever one won.
+Hooks.once('setup', () => {
+  try {
+    installRidingDrag();
+  } catch (err) {
+    log.error('could not extend the Token class; a rider dragged is steered on the drop instead', err);
+  }
 });
 
 Hooks.once('ready', () => {

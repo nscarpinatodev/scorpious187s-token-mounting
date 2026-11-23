@@ -1,7 +1,7 @@
 import { MODULE_ID } from './constants.js';
 import { carryAction, movementDuration } from './carry-action.js';
 import { allRiders, getRiders, mountLink, isMount } from './relations.js';
-import { seatPosition, generateSeats, pathRotations } from './seating.js';
+import { seatPosition, generateSeats, pathRotations, facingOf } from './seating.js';
 import { seatLayoutOf, FLAG_SEAT_LAYOUT } from './token-options.js';
 import { ensureLayering } from './layering.js';
 import { log } from './logger.js';
@@ -162,7 +162,12 @@ export function registerMovementSync() {
     if (!reseat) return;
     if (!isMount(tokenDoc)) return;
 
-    carryRiders(tokenDoc).catch(err => log.error('failed to reseat riders', err));
+    // A mount turned by hand turns its riders with it, not just their seats.
+    // The facing comes from the change itself: the document's own rotation is
+    // still the old one at this point, and animates towards the new (see atRest).
+    const turned = 'rotation' in changed && !moved;
+    carryRiders(tokenDoc, null, false, turned ? { facing: changed.rotation } : {})
+      .catch(err => log.error('failed to reseat riders', err));
   });
 }
 
@@ -189,6 +194,30 @@ function shouldIMove(riderDoc) {
   if (!game.user.isGM) return false;
   const gms = game.users.filter(u => u.active && u.isGM).map(u => u.id).sort();
   return game.user.id === gms[0];
+}
+
+/**
+ * A token as it will be once its animations have finished.
+ *
+ * On v14 a token document's position and rotation are animated in place: for
+ * as long as the token is turning on screen, `document.rotation` is wherever
+ * the turn has got to. Its source holds where it is going. Seats worked out
+ * from the animated values land wherever the mount happened to be facing at
+ * that instant — one rider of a horse turned by hand was seated for the old
+ * facing and the next for the new.
+ */
+function atRest(tokenDoc) {
+  const source = tokenDoc._source ?? tokenDoc;
+  return {
+    x: source.x ?? tokenDoc.x,
+    y: source.y ?? tokenDoc.y,
+    elevation: source.elevation ?? tokenDoc.elevation,
+    width: source.width ?? tokenDoc.width,
+    height: source.height ?? tokenDoc.height,
+    rotation: source.rotation ?? tokenDoc.rotation,
+    lockRotation: source.lockRotation ?? tokenDoc.lockRotation,
+    parent: tokenDoc.parent,
+  };
 }
 
 /**
@@ -220,9 +249,12 @@ function frameAt(mountDoc, point, rotation) {
  *                                  riders to their seats without animating.
  * @param {boolean} autoRotate      Whether the mount's movement turned it to
  *                                  face its direction of travel.
+ * @param {object} [options]
+ * @param {number} [options.facing] The rotation riders should end at, when the
+ *                                  mount was turned without being moved.
  */
 async function carryRiders(mountDoc, mountPath = null, autoRotate = false, {
-  force = false, duration, origin, method,
+  force = false, duration, origin, method, facing,
 } = {}) {
   // Resolve the whole chain from this mount down, so a passenger on a rider
   // moves too. allRiders is cycle-guarded, and returns nearest-first — which
@@ -245,6 +277,16 @@ async function carryRiders(mountDoc, mountPath = null, autoRotate = false, {
     ? pathRotations(origin ?? mountPath[0], mountPath, mountDoc.rotation, method)
     : null;
 
+  // The way riders face when they arrive: the way the mount does.
+  //
+  // A rider used to work its facing out for itself, from its own route. That
+  // was the same answer as the mount's for as long as seats did not turn. Now
+  // that they do, a rider off the mount's middle swings round as the mount
+  // turns, its route is no longer parallel to the mount's, and it arrived
+  // facing a few degrees off: two riders either side of a horse that had
+  // turned to face west ended at 96 and 85 degrees against the horse's 90.
+  const arriveFacing = facingOf(rotations ? rotations.at(-1) : facing);
+
   for (const rider of riders) {
     // The seat is relative to whatever this rider is directly riding, which is
     // not necessarily the token that started the chain.
@@ -259,7 +301,7 @@ async function carryRiders(mountDoc, mountPath = null, autoRotate = false, {
     // rider traces the parent's shape rather than a chord across it.
     const path = parentPath?.length
       ? parentPath.map((point, i) => seatPosition(frameAt(parent, point, rotations?.[i]), rider, seat))
-      : [seatPosition(parent, rider, seat)];
+      : [seatPosition(atRest(parent), rider, seat)];
 
     // Recorded even when this client is not the one moving the rider, so the
     // chain below it still resolves against the right route.
@@ -281,7 +323,10 @@ async function carryRiders(mountDoc, mountPath = null, autoRotate = false, {
       // A multi-point path is always worth issuing: the rider has ground to
       // cover even when it happens to end where it started, as on a loop.
       if (path.length > 1 || !samePosition(rider, destination)) {
-        await moveRider(rider, path, autoRotate, duration);
+        await moveRider(rider, path, autoRotate, duration, arriveFacing);
+      } else if (arriveFacing !== undefined && facingOf(atRest(rider).rotation) !== arriveFacing) {
+        // In its seat already, as on the mount's middle: it only has to turn.
+        await rider.update({ rotation: arriveFacing }, { [MODULE_ID]: { carried: true } });
       }
     } catch (err) {
       log.error(`failed to carry rider "${rider.name}"`, err);
@@ -292,9 +337,10 @@ async function carryRiders(mountDoc, mountPath = null, autoRotate = false, {
 }
 
 function samePosition(riderDoc, target) {
-  return riderDoc.x === target.x
-    && riderDoc.y === target.y
-    && (riderDoc.elevation ?? 0) === (target.elevation ?? 0);
+  const rider = atRest(riderDoc);
+  return rider.x === target.x
+    && rider.y === target.y
+    && (rider.elevation ?? 0) === (target.elevation ?? 0);
 }
 
 /**
@@ -309,14 +355,14 @@ function samePosition(riderDoc, target) {
  * them. Sizing by count would give a rider in seat 0 a two-seat grid while a
  * rider in seat 3 got a four-seat grid, and the two would overlap.
  */
-function seatFor(mountDoc, seatIndex) {
+export function seatFor(mountDoc, seatIndex) {
   const riders = getRiders(mountDoc);
   const highest = riders.reduce((max, r) => Math.max(max, mountLink(r)?.seat ?? 0), 0);
   const seats = generateSeats(Math.max(riders.length, highest + 1, seatIndex + 1), seatLayoutOf(mountDoc));
   return seats[seatIndex] ?? { dx: 0, dy: 0 };
 }
 
-async function moveRider(riderDoc, path, autoRotate = false, duration) {
+async function moveRider(riderDoc, path, autoRotate = false, duration, facing) {
   const options = {
     [MODULE_ID]: { carried: true },
     // The mount has already paid for this movement and already resolved walls;
@@ -345,6 +391,33 @@ async function moveRider(riderDoc, path, autoRotate = false, duration) {
   // The waypoint API carries the action per movement rather than requiring the
   // token's persistent movementAction to be mutated and restored.
   const action = carryAction();
+
+  // With a facing to arrive at, the move is issued as the update that
+  // `TokenDocument#move` would make, with the rotation added to it. Core only
+  // works a facing out from the route when the update does not already name
+  // one, and its animation turns the token along the way and then to whatever
+  // the document says — so the rider still turns as it travels, and ends
+  // exactly where its mount does.
+  if (typeof riderDoc.move === 'function' && action && facing !== undefined
+    && facingOf(atRest(riderDoc).rotation) !== facing) {
+    const { constrainOptions, autoRotate: turns, ...rest } = options;
+    try {
+      return await riderDoc.update({ rotation: facing }, {
+        ...rest,
+        movement: {
+          [riderDoc.id]: {
+            waypoints: path.map(point => ({ ...point, action, snapped: false })),
+            method: 'api',
+            autoRotate: turns,
+            constrainOptions,
+          },
+        },
+      });
+    } catch (err) {
+      log.error('could not turn a rider with its move; moving it and leaving its facing', err);
+    }
+  }
+
   if (typeof riderDoc.move === 'function' && action) {
     return riderDoc.move(
       // `explicit` and `checkpoint` are left off deliberately: the rider is not

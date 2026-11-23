@@ -168,6 +168,18 @@ export function seatPosition(mount, rider, seat) {
 }
 
 /**
+ * A rotation as a token document stores it: 0 up to, not including, 360.
+ * @returns {number|undefined} Undefined for anything that is not a number.
+ */
+export function facingOf(rotation) {
+  const degrees = Number(rotation);
+  if (rotation === null || rotation === undefined || !Number.isFinite(degrees)) return undefined;
+  const turned = ((degrees % 360) + 360) % 360;
+  // Rounding noise from the trigonometry must not read as a turn.
+  return Math.round(turned * 1e6) / 1e6 === 360 ? 0 : Math.round(turned * 1e6) / 1e6;
+}
+
+/**
  * Where a mount goes for the route its pilot drew.
  *
  * A point the pilot placed freely (Shift held, or a gridless scene) keeps the

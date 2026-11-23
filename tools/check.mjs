@@ -659,6 +659,17 @@ console.log('\nSteering');
   check('a route marked nowhere is kept whole', where(intendedPoints([turn(100, 0), turn(200, 100)])), '100,0 200,100');
   check('no route', intendedPoints(undefined).length, 0);
 
+  // Facings are compared as a token document stores them.
+  const { facingOf } = await import(
+    'file://' + path.join(root, 'scripts/seating.js').replace(/\\/g, '/')
+  );
+  check('a quarter turn left is 270', facingOf(-90), 270);
+  check('a full turn is no turn', facingOf(360), 0);
+  check('more than a full turn', facingOf(450), 90);
+  check('trigonometry noise is not a turn', facingOf(89.99999999999999), 90);
+  check('nothing to face', facingOf(undefined), undefined);
+  check('not a number', facingOf('north'), undefined);
+
   // A flying mount carries its pilot's change of height.
   const climb = steeredRoute({ ...horse(400, 400), elevation: 20 }, { ...knight(450, 450), elevation: 20 },
     [{ x: 700, y: 500, elevation: 50, snapped: true }], grid);
@@ -711,6 +722,23 @@ console.log('\nRiding together');
   check('seat of the pilot', getSeat(knight), 0);
   check('seat of a passenger', getSeat(squire), 1);
   check('seat of a token on foot', getSeat(goblin), null);
+
+  // Whose mount a drag moves: down the reins, and nobody if a passenger is on the way.
+  const { steeredMount, ridesAnyOf } = await import(
+    'file://' + path.join(root, 'scripts/relations.js').replace(/\\/g, '/')
+  );
+  const passenger = make('passenger', 'squire', 0);
+  check('the pilot steers its mount', steeredMount(knight)?.id, 'dragon');
+  check('a pilot of a pilot steers the root', steeredMount(page)?.id, 'dragon');
+  check('a passenger steers nothing', steeredMount(squire), null);
+  check('steering a passenger moves nothing', steeredMount(passenger), null);
+  check('a token on foot steers nothing', steeredMount(goblin), null);
+  check('a mount steers nothing', steeredMount(dragon), null);
+  check('rides one of a set', ridesAnyOf(page, new Set(['dragon'])), true);
+  check('rides none of a set', ridesAnyOf(page, new Set(['goblin'])), false);
+  check('a mount does not ride itself', ridesAnyOf(dragon, new Set(['dragon'])), false);
+  check('ids as the keys of an object', ridesAnyOf(knight, { dragon: {} }), true);
+  check('no ids at all', ridesAnyOf(knight, undefined), false);
 
   // dnd5e hands over the tokens it found in the way; ours come out, others stay.
   const placed = doc => ({ document: doc });

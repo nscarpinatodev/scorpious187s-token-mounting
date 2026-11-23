@@ -135,25 +135,36 @@ horse would put it in the saddle.
 
 ### Steering
 
-Once mounted, **drag the rider in seat 0 and the mount follows.** The mount
-goes through the waypoints the pilot set and stops where the pilot let go.
+Once mounted, **drag the rider in seat 0 and you are dragging the mount.**
 
-Between those points the mount finds its own way. It is asked for its route
-exactly as if it had been dragged itself, so a pathfinding module plans for the
-mount's size and not the rider's, and with core alone it takes the straight
-line. A route drawn for a rider one space across can clip a wall corner for a
-mount two spaces across; this is why the rider's route is not replayed turn for
-turn.
+The drag is handed to the mount before it begins, so everything you see while
+dragging is the mount's: its preview, with the riders still on its back; its
+ruler, measured from the mount; its route, planned for a token of its size; and
+its cost, against its speed. It snaps to the grid as a token of its size snaps.
+On the drop it is the mount that moves, and the riders are carried. When the
+drag ends, your selection goes back to the rider.
 
-On a grid the mount moves as many spaces as the ruler counted for the pilot and
-lands on the grid. The pilot's seat is often between spaces (the middle of a
-horse two spaces wide is a grid corner), so shifting the pilot's destination by
-the seat's offset, as versions before 0.5.1 did, left the mount half a space
-off the grid and charged it for a distance the ruler never showed. A pilot
-dragged with Shift held, or on a gridless scene, still moves the mount by the
-exact offset.
+Dragging the mount itself looks the same: its riders ride the preview.
 
-A steered mount shows its ruler as it travels, as a dragged token does.
+Before 0.6.0 the rider was dragged as its own token and the move was turned
+into a move of the mount on the drop. The ruler was the rider's, the route was
+planned for the rider's size, and the rider's preview snapped to a grid space
+half a space from the saddle (the middle of a horse two spaces wide is a grid
+corner).
+
+That older path is still there for the cases a drag cannot be handed over: a
+pilot moved by a script, and a user who may move the mount but not select it.
+There the mount is sent to where the pilot was heading and asked for its own
+route, lands on the grid, and shows its ruler as it travels. Before 0.6.0 that
+path read the pilot's route from the wrong half of the movement on v14, and
+left the mount half a space off the grid.
+
+### Facing
+
+With core's Token Auto-Rotate on, a mount turns to face the way it travels, its
+seats turn with it, and its riders arrive facing exactly as it does. Turn a
+mount by hand and its riders turn with it. A mount with Lock Rotation keeps its
+art, its seats and its riders as they are.
 
 Seat 0 is whoever mounted first, since seats fill lowest-free-first, and it is
 already the position seating.js treats as the driver's. Passengers are blocked
@@ -251,7 +262,7 @@ a rider could not reach the saddle of a mount of another disposition, the mount
 could not leave the space its own rider was in, and each paid for difficult
 terrain to step off the other.
 
-From 0.5.1 a mount, its riders, and anyone riding those riders are exempt from
+From 0.6.0 a mount, its riders, and anyone riding those riders are exempt from
 each other. Everyone else is blocked by them as before. Nothing needs setting.
 
 Dragging a token onto a mount it would be blocked by is still stopped short by
@@ -362,13 +373,15 @@ not been played. Seat layouts and seats turning with the mount, new in 0.5.0,
 are covered the same way: the offline harness pins every layout, rotation and
 route facing, but none has been played yet.
 
-The steering and dnd5e changes in 0.5.1 were run in a v14 world on dnd5e 6.1.1,
-as GM, on a square grid: a pilot steered a mount two spaces wide round a wall
-and it landed on the grid, and a rider and a mount of different dispositions
-no longer stopped each other. They have not been run from a player's client,
-on a hex grid, or on v13. Before 0.5.1, steering on v14 read the pilot's route
-from the wrong half of the movement and sent the mount straight to the
-destination.
+The changes in 0.6.0 were run in a v14 world on dnd5e 6.1.1, as GM, on a square
+grid, with a human on a Riding Horse: dragging the rider dragged the horse,
+measured on the horse, with one rider and with two; with Token Auto-Rotate on,
+the riders arrived facing as the horse did, and turned with it when it was
+turned by hand; and a rider and a mount of different dispositions no longer
+stopped each other. None of it has been run from a player's client, on a hex
+grid, or on v13. Handing the drag to the mount relies on core's
+`_initializeDragLeft` and `_finalizeDragLeft`; where a version of core does not
+call them, a dragged pilot is steered on the drop as before.
 
 Dismounting takes back the ownership it granted. Before 0.5.0 it did not: the
 revoke was merged into the actor's ownership rather than replacing it, so

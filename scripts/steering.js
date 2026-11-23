@@ -1,5 +1,5 @@
 import { MODULE_ID } from './constants.js';
-import { mountLink, getMount } from './relations.js';
+import { mountLink, getMount, ridesAnyOf } from './relations.js';
 import { acceptsDragMount, isRideable } from './token-options.js';
 import { requestMount, validateMount } from './mount.js';
 import { requestedRoute, intendedPoints } from './movement.js';
@@ -8,6 +8,12 @@ import { log } from './logger.js';
 
 /**
  * Steering a mount by moving the pilot, and mounting by dragging.
+ *
+ * A pilot dragged with the pointer does not get this far any more: the drag is
+ * handed to the mount before it starts (see riding-drag.js). What follows
+ * still steers for every other way a pilot can be moved — a script, a user who
+ * may move the mount but not select it, a version of core without the drag
+ * hooks.
  *
  * Both hang off `preMoveToken`, which can veto a movement outright. That is the
  * only place a drag can be turned into something other than a drag — by the time
@@ -27,6 +33,11 @@ export function registerSteering() {
   Hooks.on('preMoveToken', (tokenDoc, movement, options) => {
     // Never interfere with the moves we generate to carry riders.
     if (options?.[MODULE_ID]?.carried) return;
+
+    // A rider moved in the same operation as what it rides goes nowhere on its
+    // own account: the mount's move carries it. Dragging a selection that holds
+    // both is the usual way to get here.
+    if (ridesAnyOf(tokenDoc, options?.movement)) return false;
 
     try {
       const link = mountLink(tokenDoc);

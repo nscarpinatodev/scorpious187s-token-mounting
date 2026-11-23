@@ -60,6 +60,47 @@ export function ridesTogether(tokenDoc, otherDoc) {
   return rootMount(tokenDoc)?.id === rootMount(otherDoc)?.id;
 }
 
+/**
+ * The mount a drag of this token moves: the one it rides if it holds the
+ * reins, and on down while each mount holds the reins of the next. A page
+ * steering a knight who steers a dragon moves the dragon.
+ *
+ * @param {TokenDocument} tokenDoc
+ * @param {number} [pilotSeat=0]  The seat that steers.
+ * @returns {TokenDocument|null} Null when it rides nothing, or when anyone on
+ *   the way down is a passenger: a passenger cannot move what it sits on.
+ */
+export function steeredMount(tokenDoc, pilotSeat = 0) {
+  const seen = new Set([tokenDoc?.id]);
+  let current = tokenDoc;
+  let lead = null;
+  for (;;) {
+    const link = mountLink(current);
+    if (!link) return lead;
+    if ((link.seat ?? 0) !== pilotSeat) return null;
+    const mount = getMount(current);
+    if (!mount || seen.has(mount.id)) return lead;
+    seen.add(mount.id);
+    lead = mount;
+    current = mount;
+  }
+}
+
+/**
+ * Is this token riding, at any depth, one of the tokens with these ids?
+ * @param {TokenDocument} tokenDoc
+ * @param {Set<string>|object} ids  A set of token ids, or an object keyed by them.
+ */
+export function ridesAnyOf(tokenDoc, ids) {
+  const has = id => (ids instanceof Set ? ids.has(id) : Boolean(ids) && Object.hasOwn(ids, id));
+  const seen = new Set([tokenDoc?.id]);
+  for (let mount = getMount(tokenDoc); mount && !seen.has(mount.id); mount = getMount(mount)) {
+    if (has(mount.id)) return true;
+    seen.add(mount.id);
+  }
+  return false;
+}
+
 /** @returns {number|null} The seat this token holds on its mount, or null if it rides nothing. */
 export function getSeat(riderDoc) {
   const link = mountLink(riderDoc);
