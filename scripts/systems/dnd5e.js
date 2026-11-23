@@ -2,12 +2,14 @@ import {
   MODULE_ID, SETTING_HOSTILE_CHECK, SETTING_HOSTILE_DC,
 } from '../constants.js';
 import { isHostile } from '../mount.js';
+import { ridesTogether } from '../relations.js';
 import { log } from '../logger.js';
 
 /**
- * dnd5e: subduing a hostile mount with an Animal Handling check.
+ * dnd5e: subduing a hostile mount with an Animal Handling check, and keeping
+ * a mount and its riders out of each other's way.
  *
- * The only system-specific code in the module, and it is kept behind the
+ * The only system-specific code in the module. The check is kept behind the
  * generic `preMount` gate rather than wired into mounting directly — the core
  * has no system dependency, and anyone on another system can register the same
  * hook with their own roll.
@@ -41,7 +43,41 @@ export function registerDnd5e() {
   }
   Hooks.on(`${MODULE_ID}.preMount`, onPreMount);
   log.debug('registered dnd5e animal handling gate');
+  Hooks.on('dnd5e.determineOccupiedGridSpaceBlocking', ignoreOwnMount);
+  Hooks.on('dnd5e.determineOccupiedGridSpaceDifficult', ignoreOwnMount);
+  log.debug('registered dnd5e occupied-space exemption');
   return true;
+}
+
+/**
+ * A mount and its riders are not obstacles to one another.
+ *
+ * dnd5e's movement automation stops a creature at the space of another that is
+ * not on its side and near its size, and charges extra to pass through one. A
+ * rider sits inside its mount's space, so left alone that rule turns on the
+ * pair: a knight cannot reach the saddle of a horse of another disposition,
+ * the horse cannot leave the space its own rider is in, and each pays for
+ * difficult terrain to get off the other.
+ *
+ * dnd5e asks, through these two hooks, which tokens in a space are in the way
+ * of the one moving, and lets the answer be edited. Anything that travels with
+ * the mover — its mount, its riders, whoever shares its mount — is taken out.
+ *
+ * @param {object} gridSpace  The space being tested.
+ * @param {Token} token       The token being moved.
+ * @param {object} options
+ * @param {Set<Token>} found  The tokens dnd5e found in the way; edited in place.
+ */
+export function ignoreOwnMount(gridSpace, token, options, found) {
+  try {
+    if (!found?.size || !token?.document) return;
+    for (const other of [...found]) {
+      if (ridesTogether(token.document, other?.document)) found.delete(other);
+    }
+  } catch (err) {
+    // Never let a failure here decide where a token may go.
+    log.error('mount exemption failed; leaving dnd5e to decide', err);
+  }
 }
 
 function onPreMount(riderDoc, mountDoc, gate) {

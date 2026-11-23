@@ -7,13 +7,17 @@ import { MODULE_ID } from './constants.js';
 import { registerSettings } from './settings.js';
 import { registerCarryAction, carryAction, CARRY_ACTION } from './carry-action.js';
 import { registerMovementSync, resnap } from './movement.js';
-import { registerMountSocket, registerCleanup, requestMount, requestDismount } from './mount.js';
+import {
+  registerMountSocket, registerCleanup, requestMount, requestDismount, isHostile,
+} from './mount.js';
 import { registerTokenHUD } from './hud.js';
 import { registerTokenConfig } from './token-config.js';
 import { registerSteering, PILOT_SEAT } from './steering.js';
 import { registerDnd5e, isDnd5e } from './systems/dnd5e.js';
 import { registerMountDetection, looksLikeMount } from './mount-detection.js';
-import { getMount, getRiders, allRiders, isMounted, isMount } from './relations.js';
+import {
+  getMount, getRiders, allRiders, isMounted, isMount, getSeat, ridesTogether,
+} from './relations.js';
 import {
   capacityOf, isMountable, isRideable, acceptsDragMount, grantsOwnership,
 } from './token-options.js';
@@ -42,6 +46,11 @@ Hooks.once('init', () => {
     allRiders,
     isMounted,
     isMount,
+    getSeat,
+    // The rider whose drag moves the mount.
+    isPilot: tokenDoc => getSeat(tokenDoc) === PILOT_SEAT,
+    ridesTogether,
+    isHostile,
     resnap,
     pilotSeat: PILOT_SEAT,
     seating: { generateSeats, seatPosition },

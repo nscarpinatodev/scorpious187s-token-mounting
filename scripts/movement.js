@@ -69,6 +69,42 @@ export function realWaypoints(waypoints) {
   return real.length ? real : waypoints;
 }
 
+/**
+ * The route a movement is asking for, before any of it has happened: the
+ * waypoints someone placed, in order.
+ *
+ * `preMoveToken` is where this is read, and there the route is split in two.
+ * `passed` is the stretch about to be travelled — on v14 that is the whole
+ * route, or as far as its first checkpoint — and `pending` is whatever lies
+ * beyond that checkpoint. Reading `pending` alone, as steering used to, finds
+ * nothing for an ordinary drag: the mount was then sent straight to the
+ * destination, losing every turn the pilot's route took round a wall, and the
+ * destination on its own does not say whether it was snapped to the grid.
+ *
+ * @returns {object[]} Empty only when the movement names nowhere to go.
+ */
+export function requestedRoute(movement) {
+  const route = [...(movement?.passed?.waypoints ?? []), ...(movement?.pending?.waypoints ?? [])];
+  const placed = realWaypoints(route);
+  return placed.length ? placed : [movement?.destination].filter(Boolean);
+}
+
+/**
+ * The points of a route that say where its maker wanted to go: the waypoints
+ * they set and the place they let go, without the turns a pathfinder put in
+ * between to get there.
+ *
+ * A pathfinder's turns suit the token they were found for. Handed to a mount
+ * twice the size they can clip a corner the pilot cleared, so when the mount
+ * can find its own way (see steering.js) it is given only these.
+ *
+ * @returns {object[]} All of `route` when nothing in it is marked either way.
+ */
+export function intendedPoints(route) {
+  const intended = (route ?? []).filter(point => point.explicit || point.checkpoint);
+  return intended.length ? intended : (route ?? []);
+}
+
 export function registerMovementSync() {
   // Movement. `movement.passed.waypoints` is the route the mount actually
   // travelled in this operation; a multi-checkpoint drag arrives as several
@@ -284,8 +320,10 @@ async function moveRider(riderDoc, path, autoRotate = false, duration) {
   const options = {
     [MODULE_ID]: { carried: true },
     // The mount has already paid for this movement and already resolved walls;
-    // a passenger must not be re-charged or re-blocked.
-    constrainOptions: { ignoreWalls: true, ignoreCost: true },
+    // a passenger must not be re-charged or re-blocked. `ignoreTokens` is
+    // dnd5e's: there a creature can be stopped by another creature's space,
+    // and a rider's seat is by definition inside its mount's.
+    constrainOptions: { ignoreWalls: true, ignoreCost: true, ignoreTokens: true },
     // Must be passed explicitly. Core resolves auto-rotation from the *method*
     // of movement: a drag reads core's Token Auto-Rotate setting, but an api
     // move — which this is — defaults to false. Left off, a rider slides

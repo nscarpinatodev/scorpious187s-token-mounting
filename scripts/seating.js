@@ -168,6 +168,61 @@ export function seatPosition(mount, rider, seat) {
 }
 
 /**
+ * Where a mount goes for the route its pilot drew.
+ *
+ * A point the pilot placed freely (Shift held, or a gridless scene) keeps the
+ * exact offset between pilot and mount, as it always did.
+ *
+ * A point that was snapped to the grid is counted in spaces instead. The pilot
+ * sits somewhere on the mount, often between spaces: the middle of a horse two
+ * spaces wide is a grid corner. Shifting the pilot's snapped point by the seat
+ * offset would put the mount half a space off the grid, and charge it for a
+ * distance the ruler never showed. So the mount moves as many spaces as the
+ * ruler counted for the pilot — from the space the pilot's centre is in to the
+ * space the point is in — and lands on the grid. The pilot is then carried to
+ * its seat like any other rider.
+ *
+ * @param {object} mount     The mount: x, y, elevation, and getSnappedPosition where there is a grid.
+ * @param {object} rider     The pilot: x, y, elevation, width, height.
+ * @param {object[]} points  The pilot's waypoints.
+ * @param {object|null} grid The scene's grid, or null to keep the offset throughout.
+ * @returns {{x: number, y: number, elevation: number, snapped: boolean}[]}
+ */
+export function steeredRoute(mount, rider, points, grid = null) {
+  const dx = mount.x - rider.x;
+  const dy = mount.y - rider.y;
+  const de = (mount.elevation ?? 0) - (rider.elevation ?? 0);
+  const elevationOf = point => (point.elevation ?? rider.elevation ?? 0) + de;
+
+  const counts = Boolean(grid) && !grid.isGridless
+    && typeof grid.getOffset === 'function' && typeof grid.getCenterPoint === 'function';
+  const size = grid?.size ?? 100;
+  const centreOf = point => (typeof rider.getCenterPoint === 'function'
+    ? rider.getCenterPoint({ x: point.x, y: point.y })
+    : {
+      x: point.x + ((point.width ?? rider.width ?? 1) * size) / 2,
+      y: point.y + ((point.height ?? rider.height ?? 1) * size) / 2,
+    });
+  const onGrid = position => {
+    const snapped = typeof mount.getSnappedPosition === 'function' ? mount.getSnappedPosition(position) : null;
+    return { x: snapped?.x ?? position.x, y: snapped?.y ?? position.y };
+  };
+
+  let from = null;
+  let base = null;
+  return (points ?? []).map(point => {
+    if (!counts || point.snapped !== true) {
+      return { x: point.x + dx, y: point.y + dy, elevation: elevationOf(point), snapped: false };
+    }
+    from ??= grid.getCenterPoint(grid.getOffset(centreOf(rider)));
+    base ??= onGrid({ x: mount.x, y: mount.y });
+    const to = grid.getCenterPoint(grid.getOffset(centreOf(point)));
+    const target = onGrid({ x: base.x + (to.x - from.x), y: base.y + (to.y - from.y) });
+    return { x: target.x, y: target.y, elevation: elevationOf(point), snapped: true };
+  });
+}
+
+/**
  * The rotation an auto-rotating token has at each point of its route.
  *
  * Mirrors core: each segment turns the token to face along it, at the segment's

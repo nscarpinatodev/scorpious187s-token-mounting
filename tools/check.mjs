@@ -577,6 +577,157 @@ console.log('\nSeat layouts');
   globalThis.game = priorGame;
 }
 
+// ── Steering on the grid ─────────────────────────────────────────────────────
+// A pilot sits somewhere on its mount, often between spaces. Its snapped drag
+// must move the mount by whole spaces, not by the seat's offset.
+console.log('\nSteering');
+{
+  const { steeredRoute } = await import(
+    'file://' + path.join(root, 'scripts/seating.js').replace(/\\/g, '/')
+  );
+  const check = (label, actual, expected) => {
+    if (actual === expected) pass(`${label} → ${actual}`);
+    else fail(`${label} → got ${actual}, expected ${expected}`);
+  };
+  const size = 100;
+  const grid = {
+    size,
+    isGridless: false,
+    getOffset: ({ x, y }) => ({ i: Math.floor(y / size), j: Math.floor(x / size) }),
+    getCenterPoint: ({ i, j }) => ({ x: (j + 0.5) * size, y: (i + 0.5) * size }),
+  };
+  const snapTo = ({ x, y }) => ({ x: Math.round(x / size) * size, y: Math.round(y / size) * size });
+  const horse = (x, y) => ({ x, y, elevation: 0, width: 2, height: 2, getSnappedPosition: snapTo });
+  const knight = (x, y) => ({ x, y, elevation: 0, width: 1, height: 1 });
+  const where = route => route.map(point => `${point.x},${point.y}${point.snapped ? '' : '~'}`).join(' ');
+
+  // The only rider on a horse two spaces wide sits on its middle: a grid corner.
+  // Core snaps a half to the space below and to the right, which is also the
+  // space the pilot's centre counts as being in, so straight down stays straight.
+  const solo = steeredRoute(horse(1200, 300), knight(1250, 350), [{ x: 1300, y: 1000, snapped: true }], grid);
+  check('centre seat, six spaces down: on the grid', where(solo), '1200,900');
+
+  // Two riders in a row sit half a space down from the horse's top edge.
+  const pair = steeredRoute(horse(400, 400), knight(400, 450), [{ x: 700, y: 500, snapped: true }], grid);
+  check('row seat, three spaces across: no drift down', where(pair), '700,400');
+
+  // Every turn of a route is counted from the same starting space.
+  const bend = steeredRoute(horse(400, 400), knight(450, 450),
+    [{ x: 500, y: 300, snapped: true }, { x: 500, y: 100, snapped: true }, { x: 800, y: 100, snapped: true }], grid);
+  check('a route with turns keeps its shape', where(bend), '400,200 400,0 700,0');
+
+  // A mount already left off the grid by an older version is put back on it.
+  const adrift = steeredRoute(horse(1200, 950), knight(1200, 1000), [{ x: 1200, y: 700, snapped: true }], grid);
+  check('an off-grid mount lands on the grid', where(adrift), '1200,700');
+
+  // Shift-dragged, or no grid: the exact offset, as before.
+  const free = steeredRoute(horse(400, 400), knight(450, 450), [{ x: 733, y: 512, snapped: false }], grid);
+  check('a freely placed point keeps the offset', where(free), '683,462~');
+  const gridless = steeredRoute(horse(400, 400), knight(450, 450), [{ x: 700, y: 500, snapped: true }], { ...grid, isGridless: true });
+  check('gridless keeps the offset', where(gridless), '650,450~');
+  const none = steeredRoute(horse(400, 400), knight(450, 450), [{ x: 700, y: 500, snapped: true }], null);
+  check('no grid to ask keeps the offset', where(none), '650,450~');
+
+  // The route a pilot's drag asks for is read where core puts it.
+  const priorHooksForRoute = globalThis.Hooks;
+  globalThis.Hooks = { on: () => {}, callAll: () => {} };
+  const { requestedRoute, intendedPoints } = await import(
+    'file://' + path.join(root, 'scripts/movement.js').replace(/\\/g, '/')
+  );
+  globalThis.Hooks = priorHooksForRoute;
+  const step = (x, y, intermediate = false) => ({ x, y, intermediate, snapped: true });
+  const asked = movement => where(requestedRoute(movement));
+  // v14, an ordinary drag: everything is about to be travelled, nothing is pending.
+  check('a whole route waiting in `passed`', asked({
+    passed: { waypoints: [step(600, 600, true), step(600, 500), step(500, 500, true), step(300, 500)] },
+    pending: { waypoints: [] },
+    destination: { x: 300, y: 500 },
+  }), '600,500 300,500');
+  check('a checkpoint part-way: both halves, in order', asked({
+    passed: { waypoints: [step(100, 0, true), step(200, 0)] },
+    pending: { waypoints: [step(200, 100, true), step(200, 200)] },
+  }), '200,0 200,200');
+  check('no waypoints at all: the destination', asked({ destination: { x: 50, y: 60 } }), '50,60~');
+  check('nowhere to go', requestedRoute({}).length, 0);
+
+  // What the pilot meant, without a pathfinder's turns on the way there.
+  const turn = (x, y) => ({ x, y, snapped: true });
+  const set = (x, y) => ({ x, y, snapped: true, explicit: true, checkpoint: true });
+  const end = (x, y) => ({ x, y, snapped: true, checkpoint: true });
+  check('turns are left out, set waypoints and the end kept',
+    where(intendedPoints([turn(100, 0), set(200, 0), turn(200, 100), turn(300, 200), end(400, 200)])), '200,0 400,200');
+  check('a route marked nowhere is kept whole', where(intendedPoints([turn(100, 0), turn(200, 100)])), '100,0 200,100');
+  check('no route', intendedPoints(undefined).length, 0);
+
+  // A flying mount carries its pilot's change of height.
+  const climb = steeredRoute({ ...horse(400, 400), elevation: 20 }, { ...knight(450, 450), elevation: 20 },
+    [{ x: 700, y: 500, elevation: 50, snapped: true }], grid);
+  check('elevation follows the pilot', climb[0].elevation, 50);
+}
+
+// ── Riding together ──────────────────────────────────────────────────────────
+// On dnd5e a mount and its riders must not count as obstacles to one another.
+console.log('\nRiding together');
+{
+  const { ridesTogether, getSeat } = await import(
+    'file://' + path.join(root, 'scripts/relations.js').replace(/\\/g, '/')
+  );
+  const priorHooks = globalThis.Hooks;
+  const priorGame = globalThis.game;
+  globalThis.Hooks = { on: () => {}, callAll: () => {} };
+  const { ignoreOwnMount } = await import(
+    'file://' + path.join(root, 'scripts/systems/dnd5e.js').replace(/\\/g, '/')
+  );
+  const check = (label, actual, expected) => {
+    if (actual === expected) pass(`${label} → ${actual}`);
+    else fail(`${label} → got ${actual}, expected ${expected}`);
+  };
+
+  const tokens = new Map();
+  const scene = { id: 'scene', tokens };
+  const make = (id, mount, seat = 0, parent = scene) => {
+    const doc = { id, parent, getFlag: (scope, key) => (key === 'mount' && mount ? { tokenId: mount, seat } : undefined) };
+    if (parent === scene) tokens.set(id, doc);
+    return doc;
+  };
+  const dragon = make('dragon');
+  const knight = make('knight', 'dragon', 0);
+  const squire = make('squire', 'dragon', 1);
+  const page = make('page', 'knight', 0);
+  const goblin = make('goblin');
+  const wolf = make('wolf');
+  const elsewhere = make('dragon', null, 0, { id: 'other-scene', tokens: new Map() });
+
+  check('rider and mount', ridesTogether(knight, dragon), true);
+  check('mount and rider', ridesTogether(dragon, squire), true);
+  check('two riders of one mount', ridesTogether(knight, squire), true);
+  check('a rider of a rider, and the root', ridesTogether(page, dragon), true);
+  check('a rider and a bystander', ridesTogether(knight, goblin), false);
+  check('two bystanders', ridesTogether(goblin, wolf), false);
+  check('a token and itself', ridesTogether(dragon, dragon), false);
+  check('the same id on another scene', ridesTogether(knight, elsewhere), false);
+  check('nothing to compare', ridesTogether(knight, null), false);
+
+  check('seat of the pilot', getSeat(knight), 0);
+  check('seat of a passenger', getSeat(squire), 1);
+  check('seat of a token on foot', getSeat(goblin), null);
+
+  // dnd5e hands over the tokens it found in the way; ours come out, others stay.
+  const placed = doc => ({ document: doc });
+  const inTheWay = new Set([placed(knight), placed(squire), placed(goblin)]);
+  ignoreOwnMount({}, placed(dragon), {}, inTheWay);
+  check('the mount is not stopped by its riders', [...inTheWay].map(t => t.document.id).join(','), 'goblin');
+  const before = new Set([placed(dragon), placed(wolf)]);
+  ignoreOwnMount({}, placed(goblin), {}, before);
+  check('a bystander is still stopped by the mount', before.size, 2);
+  let threw = false;
+  try { ignoreOwnMount({}, null, {}, new Set([placed(goblin)])); ignoreOwnMount({}, placed(dragon), {}, undefined); } catch { threw = true; }
+  check('missing arguments are survived', threw, false);
+
+  globalThis.Hooks = priorHooks;
+  globalThis.game = priorGame;
+}
+
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log('');
 if (failures) {

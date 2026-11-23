@@ -135,9 +135,25 @@ horse would put it in the saddle.
 
 ### Steering
 
-Once mounted, **drag the rider in seat 0 and the mount follows.** The pilot's
-route is translated into the mount's frame and replayed there, so the mount
-traces the shape that was drawn rather than a straight line to the end of it.
+Once mounted, **drag the rider in seat 0 and the mount follows.** The mount
+goes through the waypoints the pilot set and stops where the pilot let go.
+
+Between those points the mount finds its own way. It is asked for its route
+exactly as if it had been dragged itself, so a pathfinding module plans for the
+mount's size and not the rider's, and with core alone it takes the straight
+line. A route drawn for a rider one space across can clip a wall corner for a
+mount two spaces across; this is why the rider's route is not replayed turn for
+turn.
+
+On a grid the mount moves as many spaces as the ruler counted for the pilot and
+lands on the grid. The pilot's seat is often between spaces (the middle of a
+horse two spaces wide is a grid corner), so shifting the pilot's destination by
+the seat's offset, as versions before 0.5.1 did, left the mount half a space
+off the grid and charged it for a distance the ruler never showed. A pilot
+dragged with Shift held, or on a gridless scene, still moves the mount by the
+exact offset.
+
+A steered mount shows its ruler as it travels, as a dragged token does.
 
 Seat 0 is whoever mounted first, since seats fill lowest-free-first, and it is
 already the position seating.js treats as the driver's. Passengers are blocked
@@ -226,6 +242,21 @@ stays with the world setting.
 > before". Tokens already placed have no flag, so they become unmountable until
 > marked. Detection runs on creation, not retroactively.
 
+### Riders and mounts are not in each other's way (dnd5e)
+
+dnd5e's movement automation stops a creature at the space of another that is
+not on its side and close to its size, and charges extra to pass through one.
+A rider sits inside its mount's space, so that rule used to turn on the pair:
+a rider could not reach the saddle of a mount of another disposition, the mount
+could not leave the space its own rider was in, and each paid for difficult
+terrain to step off the other.
+
+From 0.5.1 a mount, its riders, and anyone riding those riders are exempt from
+each other. Everyone else is blocked by them as before. Nothing needs setting.
+
+Dragging a token onto a mount it would be blocked by is still stopped short by
+dnd5e before the drop is seen, so mount that one from the Token HUD.
+
 ### Subduing a hostile mount (dnd5e)
 
 On dnd5e, two extra settings appear: **Hostile Mounts Require an Animal Handling
@@ -237,8 +268,8 @@ trying to control the animal is the one who sees the dice.
 The settings are registered on every system but only shown on dnd5e — an Animal
 Handling check is not a meaningful control in Fallout or PF2e.
 
-That check is the only system-specific code in the module, and it is a client of
-the same public gate anyone else can use. `validateMount` answers what can be
+That check and the exemption above are the only system-specific code in the
+module, and the check is a client of the same public gate anyone else can use. `validateMount` answers what can be
 settled by inspecting state; anything needing dice or a question goes through
 the async gate:
 
@@ -279,6 +310,9 @@ await api.dismount(riderTokenDoc);
 api.getMount(riderTokenDoc);   // TokenDocument | null
 api.getRiders(mountTokenDoc);  // TokenDocument[]
 api.allRiders(mountTokenDoc);  // whole chain, nearest first
+api.getSeat(riderTokenDoc);    // seat index, or null if it rides nothing
+api.isPilot(riderTokenDoc);    // true for the rider whose drag moves the mount
+api.ridesTogether(tokenDocA, tokenDocB); // same mount, at any depth
 await api.resnap(mountTokenDoc);
 
 api.isHostile(riderTokenDoc, mountTokenDoc);
@@ -327,6 +361,14 @@ itself a mount) are cycle-guarded and covered by the offline harness but have
 not been played. Seat layouts and seats turning with the mount, new in 0.5.0,
 are covered the same way: the offline harness pins every layout, rotation and
 route facing, but none has been played yet.
+
+The steering and dnd5e changes in 0.5.1 were run in a v14 world on dnd5e 6.1.1,
+as GM, on a square grid: a pilot steered a mount two spaces wide round a wall
+and it landed on the grid, and a rider and a mount of different dispositions
+no longer stopped each other. They have not been run from a player's client,
+on a hex grid, or on v13. Before 0.5.1, steering on v14 read the pilot's route
+from the wrong half of the movement and sent the mount straight to the
+destination.
 
 Dismounting takes back the ownership it granted. Before 0.5.0 it did not: the
 revoke was merged into the actor's ownership rather than replacing it, so

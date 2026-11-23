@@ -49,6 +49,24 @@ export function rootMount(tokenDoc, visited = new Set()) {
 }
 
 /**
+ * Are two tokens part of the same mount: one riding the other, at any depth,
+ * or both riding the same thing? They travel as one, so neither is in the
+ * other's way.
+ */
+export function ridesTogether(tokenDoc, otherDoc) {
+  if (!tokenDoc || !otherDoc || tokenDoc.id === otherDoc.id) return false;
+  if (tokenDoc.parent?.id !== otherDoc.parent?.id) return false;
+  // Two tokens that ride nothing are their own roots, and those differ.
+  return rootMount(tokenDoc)?.id === rootMount(otherDoc)?.id;
+}
+
+/** @returns {number|null} The seat this token holds on its mount, or null if it rides nothing. */
+export function getSeat(riderDoc) {
+  const link = mountLink(riderDoc);
+  return link ? (link.seat ?? 0) : null;
+}
+
+/**
  * Every token carried by this one, at any depth, nearest first.
  * Cycle-guarded for the same reason as rootMount.
  */

@@ -2,7 +2,8 @@ import { MODULE_ID } from './constants.js';
 import { mountLink, getMount } from './relations.js';
 import { acceptsDragMount, isRideable } from './token-options.js';
 import { requestMount, validateMount } from './mount.js';
-import { realWaypoints } from './movement.js';
+import { requestedRoute, intendedPoints } from './movement.js';
+import { steeredRoute } from './seating.js';
 import { log } from './logger.js';
 
 /**
@@ -68,33 +69,27 @@ function handleMountedMove(tokenDoc, link, movement) {
 /**
  * Move the mount along the route the pilot drew.
  *
- * The pilot's path is translated into the mount's frame by the constant offset
- * between them, so the mount traces the same shape rather than a straight line
- * to the endpoint — the same reason movement.js replays waypoints.
+ * The pilot's path is translated into the mount's frame, so the mount traces
+ * the same shape rather than a straight line to the endpoint — the same reason
+ * movement.js replays waypoints. Points snapped to the grid move the mount by
+ * the same count of spaces and leave it on the grid; freely placed points keep
+ * the exact offset between the two (see steeredRoute in seating.js).
  *
  * No `action` is set, so the move uses the mount's own movement action and is
  * measured against the mount's speed. That is the point of piloting the mount
  * rather than the rider: riding a dragon costs dragon movement, for free.
  */
 async function steer(mountDoc, riderDoc, movement) {
-  const dx = mountDoc.x - riderDoc.x;
-  const dy = mountDoc.y - riderDoc.y;
-  const de = (mountDoc.elevation ?? 0) - (riderDoc.elevation ?? 0);
-
-  // Only the points the pilot placed. Handing the mount the generated in-between
-  // steps as real waypoints would make it walk the grid rather than the route.
-  const placed = realWaypoints(movement?.pending?.waypoints);
-  const requested = placed.length ? placed : [movement?.destination].filter(Boolean);
+  const requested = requestedRoute(movement);
   if (!requested.length) return;
 
-  const waypoints = requested.map(point => ({
-    x: point.x + dx,
-    y: point.y + dy,
-    elevation: (point.elevation ?? riderDoc.elevation ?? 0) + de,
-    // The offset preserves whatever alignment the pilot had, and the mount is a
-    // different size, so re-snapping it to the grid would fight the pilot.
-    snapped: false,
-  }));
+  // A mount on the canvas finds its own way to where the pilot was heading,
+  // so it is told where that is and not how the pilot would have got there.
+  const token = mountDoc.object;
+  const plans = typeof token?.findMovementPath === 'function';
+  const points = plans ? intendedPoints(requested) : requested;
+  const targets = steeredRoute(mountDoc, riderDoc, points, mountDoc.parent?.grid ?? null);
+  const waypoints = plans ? await ownRoute(token, targets) : targets;
 
   await mountDoc.move(waypoints, {
     // The pilot's drag already resolved this against core's Token Auto-Rotate
@@ -102,7 +97,48 @@ async function steer(mountDoc, riderDoc, movement) {
     // to false, and the mount would travel without ever turning to face where
     // it is going — while the pilot, carried by that move, turns correctly.
     autoRotate: movement?.autoRotate === true,
+    // Likewise the ruler: a dragged token shows its route while it travels, an
+    // api move does not. The mount is travelling the route the pilot dragged,
+    // so it shows it as it would have had it been dragged itself.
+    showRuler: movement?.showRuler === true,
   });
+}
+
+/**
+ * The mount's own route through the points it is steered to.
+ *
+ * The pilot's route was planned for the pilot: its size, its seat, the walls
+ * its centre clears. The mount is another size and its centre is elsewhere, so
+ * the same line can run it into a corner the pilot passed. `findMovementPath`
+ * is where core, a system or a pathfinding module says how a token gets
+ * through a list of waypoints, and it is what a drag of the mount itself would
+ * have asked — so the mount is asked the same question. With nothing but core
+ * installed the answer is the straight line, stopped at the first wall, which
+ * is what moving it there directly would do anyway.
+ *
+ * Asked as a drag asks: a player's route is bent only by walls they have seen.
+ *
+ * @param {Token} token       The mount's token on the canvas.
+ * @param {object[]} targets  Where to go, in order.
+ * @returns {Promise<object[]>} Waypoints to move through; `targets` when no
+ *   route comes back.
+ */
+async function ownRoute(token, targets) {
+  try {
+    const document = token.document;
+    const origin = { x: document.x, y: document.y, elevation: document.elevation ?? 0 };
+    const job = token.findMovementPath([origin, ...targets], {
+      preview: true,
+      delay: 0,
+      constrainOptions: token._getDragConstrainOptions?.() ?? {},
+    });
+    const path = job?.result ?? await job?.promise;
+    // The first point of a found path is where the token already is.
+    if (Array.isArray(path) && path.length > 1) return path.slice(1);
+  } catch (err) {
+    log.error('mount could not plan its own route; steering it directly', err);
+  }
+  return targets;
 }
 
 /** An unmounted token being dragged. If it lands on a drag-target, mount it. */
