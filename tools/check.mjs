@@ -495,6 +495,47 @@ console.log('\nOwnership revocation (v13 form)');
     check('revokeAllGrants clears the flag', u[`flags.${M}.-=grants`], null);
   }
 
+  // An unlinked mount. Its actor is synthetic: the ownership it shows is the
+  // base actor's plus whatever the token's delta holds. Replacing the map there
+  // would leave a copy of the base actor's ownership pinned in the delta, so a
+  // revoke that lands back on the base actor's map clears the delta instead.
+  const unlinked = ({ base, ownership, grants }) => {
+    const s = scenario({ ownership, grants, riders: [['r1', 'alice']] });
+    s.scene.tokens = [];
+    s.deltaSent = [];
+    s.mount.actor.isToken = true;
+    s.mount.actor.token = {
+      baseActor: { ownership: base },
+      delta: { update: async change => { s.deltaSent.push(change); } },
+    };
+    return s;
+  };
+
+  {
+    const s = unlinked({ base: { default: 0, gm: OWNER }, ownership: { default: 0, gm: OWNER, alice: OWNER }, grants: { alice: null } });
+    await revokeMountOwnership(s.mount, s.tokens[0]);
+    const d = s.deltaSent[0] ?? {};
+    check('unlinked mount: the delta is updated, not the actor', `${s.deltaSent.length}/${s.sent.length}`, '1/0');
+    check('unlinked mount: ownership goes back to inheriting', d.ownership, null);
+    check('unlinked mount: no copy of the map is written', '==ownership' in d, false);
+    check('unlinked mount: grants flag cleared', d[`flags.${M}.-=grants`], null);
+  }
+
+  // The token had its own ownership before anyone mounted: that is restored as
+  // it was, not thrown away in favour of the base actor's.
+  {
+    const s = unlinked({ base: { default: 0, gm: OWNER }, ownership: { default: 2, gm: OWNER, alice: OWNER }, grants: { alice: null } });
+    await revokeMountOwnership(s.mount, s.tokens[0]);
+    check("unlinked mount with its own ownership: actor is updated", `${s.deltaSent.length}/${s.sent.length}`, '0/1');
+    check("unlinked mount with its own ownership: override kept", JSON.stringify(s.sent[0]?.['==ownership']), '{"default":2,"gm":3}');
+  }
+
+  {
+    const s = unlinked({ base: { default: 0, gm: OWNER }, ownership: { default: 0, gm: OWNER, alice: OWNER }, grants: { alice: null } });
+    await revokeAllGrants(s.mount);
+    check('unlinked mount: revokeAllGrants clears the delta too', s.deltaSent[0]?.ownership, null);
+  }
+
   Object.assign(globalThis, priorGlobals);
 }
 

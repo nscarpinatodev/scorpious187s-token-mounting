@@ -72,6 +72,36 @@ function restoreEntry(ownership, userId, previous) {
   else ownership[userId] = previous;
 }
 
+/** Whether two ownership maps grant exactly the same levels to the same keys. */
+function sameOwnership(a, b) {
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every(key => a[key] === b[key]);
+}
+
+/**
+ * Write a restored ownership map, and the grant records that go with it.
+ *
+ * An unlinked token's actor is synthetic. Its ownership is the base actor's
+ * unless the token's delta holds one of its own, and a delta holding none
+ * inherits. Replacing the map on such an actor stores the whole of it in the
+ * delta: a copy of the base actor's ownership that no longer follows it, so a
+ * GM who later shares the base actor finds this one token left behind.
+ *
+ * So when the restored map is exactly what the base actor has, the delta's
+ * ownership is cleared instead and the token goes back to inheriting. When it
+ * differs, the token had an override of its own before we granted anything,
+ * and that is written back as it was.
+ */
+async function writeOwnership(actor, ownership, flagUpdate) {
+  const delta = actor.isToken ? actor.token?.delta : null;
+  const base = actor.token?.baseActor?.ownership;
+  if (delta && base && sameOwnership(ownership, base)) {
+    await delta.update({ ownership: null, ...flagUpdate });
+    return;
+  }
+  await actor.update({ ...replaceField('ownership', ownership), ...flagUpdate });
+}
+
 /** Users who own the rider and should therefore be able to drive the mount. */
 function ridersOwners(riderDoc) {
   const actor = riderDoc?.actor;
@@ -156,7 +186,7 @@ export async function revokeMountOwnership(mountDoc, leavingRiderDoc) {
     ? Object.assign({}, ...revoked.map(id => deleteKey(GRANTS_PATH, id)))
     : deleteKey(`flags.${MODULE_ID}`, FLAG_GRANTS);
 
-  await actor.update({ ...replaceField('ownership', ownership), ...flagUpdate });
+  await writeOwnership(actor, ownership, flagUpdate);
   log.debug(`revoked mount ownership on "${actor.name}" from ${revoked.length} user(s)`);
 }
 
@@ -173,8 +203,5 @@ export async function revokeAllGrants(mountDoc) {
   const ownership = foundry.utils.deepClone(actor.ownership ?? {});
   for (const [userId, previous] of Object.entries(grants)) restoreEntry(ownership, userId, previous);
 
-  await actor.update({
-    ...replaceField('ownership', ownership),
-    ...deleteKey(`flags.${MODULE_ID}`, FLAG_GRANTS),
-  });
+  await writeOwnership(actor, ownership, deleteKey(`flags.${MODULE_ID}`, FLAG_GRANTS));
 }

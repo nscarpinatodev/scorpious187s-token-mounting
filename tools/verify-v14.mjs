@@ -262,6 +262,44 @@ async function revocationCheck(appRoot) {
     check('grant record cleared', 'grants' in (model._source.flags[MODULE] ?? {}), false);
     check("other modules' flags untouched", model._source.flags['other-module']?.keep, true);
     check('no deprecated update syntax', warnings.length, 0);
+
+    // An unlinked mount, whose ownership lives in the token's ActorDelta. The
+    // field is declared as core's BaseActorDelta declares it: nullable, and
+    // null means "inherit from the base actor". A revoke that lands back on the
+    // base actor's map has to leave it null, not a copy of that map.
+    class Delta extends abstract.DataModel {
+      static defineSchema() {
+        return {
+          ownership: new data.fields.DocumentOwnershipField({ required: false, nullable: true, initial: null }),
+          flags: new data.fields.ObjectField(),
+        };
+      }
+    }
+    const base = { default: 0, [keeper]: 2 };
+    const delta = new Delta({
+      ownership: { [player]: 3 },
+      flags: { [MODULE]: { grants: { [player]: null } } },
+    });
+    let actorUpdates = 0;
+    const synthetic = {
+      name: 'Horse',
+      isToken: true,
+      get ownership() { return { ...base, ...(delta._source.ownership ?? {}) }; },
+      getFlag: (scope, key) => delta._source.flags?.[scope]?.[key],
+      update: async () => { actorUpdates++; },
+      token: {
+        baseActor: { ownership: base },
+        delta: { update: async change => delta.updateSource(utils.expandObject(change)) },
+      },
+    };
+
+    await revokeMountOwnership({ id: 'mount', parent: { tokens: [] }, actor: synthetic }, { id: 'rider' });
+
+    check('unlinked mount: delta ownership back to inheriting', delta._source.ownership, null);
+    check('unlinked mount: granted OWNER gone', player in synthetic.ownership, false);
+    check('unlinked mount: grant record cleared', 'grants' in (delta._source.flags[MODULE] ?? {}), false);
+    check('unlinked mount: synthetic actor not written to', actorUpdates, 0);
+    check('unlinked mount: no deprecated update syntax', warnings.length, 0);
   } catch (err) {
     fail(`ownership revocation could not be verified — ${err.message.split('\n')[0]}`);
   }
