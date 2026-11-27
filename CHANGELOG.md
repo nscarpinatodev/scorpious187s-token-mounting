@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.1
+
+Dismounting from an unlinked mount no longer leaves a copy of its ownership behind.
+
+- An unlinked token takes its ownership from its actor unless it holds its own. After a rider dismounted, the mount's token was left holding a full copy of the actor's ownership. The permissions were right, but that token no longer followed later changes to the actor's ownership. It now goes back to following the actor. A token that had its own ownership before anyone mounted keeps it.
+- Checked against Foundry 14.371. Nothing in that release changes anything the module uses.
+
+Run on Foundry 14.371 with dnd5e 6.1.2 from a GM's and a player's client together, through the module's API and token updates, not the pointer: mounting and dismounting over the socket, moving and steering the mount, seat layouts turning with the mount, and ownership being granted and taken back. Not yet run on a hex grid or on v13.
+
 ## 0.6.0
 
 Dragging a rider drags the mount, and steering is fixed on Foundry v14.

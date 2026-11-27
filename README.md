@@ -370,8 +370,11 @@ carrying to work and check steering before relying on it.
 Some things remain unexercised in a real world. Chained mounts (a rider that is
 itself a mount) are cycle-guarded and covered by the offline harness but have
 not been played. Seat layouts and seats turning with the mount, new in 0.5.0,
-are covered the same way: the offline harness pins every layout, rotation and
-route facing, but none has been played yet.
+are pinned by the offline harness for every layout, rotation and route facing.
+For 0.6.1 the grid and column layouts were also run in a v14.371 world with two
+riders, turning the mount by hand and toggling Lock Rotation — from scripts, on
+a GM's and a player's client together, not with the pointer. The other layouts,
+and changing the world setting with riders aboard, have not been run live.
 
 The changes in 0.6.0 were run in a v14 world on dnd5e 6.1.1, as GM, on a square
 grid, with a human on a Riding Horse: dragging the rider dragged the horse,
@@ -387,3 +390,9 @@ Dismounting takes back the ownership it granted. Before 0.5.0 it did not: the
 revoke was merged into the actor's ownership rather than replacing it, so
 granted OWNER levels survived. That is checked against v14's real ownership
 field; the v13 form of the update is checked offline only.
+
+From 0.6.1 an unlinked mount goes back to taking its ownership from its actor
+once its last rider leaves. Before, the revoke left a full copy of the actor's
+ownership on the token, which then stopped following the actor. The grant, the
+revoke and the refusal afterwards were run in a v14.371 world from a player's
+client, on an unlinked mount, with the request going to the GM over the socket.
